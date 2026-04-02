@@ -1,0 +1,1413 @@
+:root {
+  --bg: #0b0f17;
+  --panel: #0f1626;
+  --text: #e8eefc;
+  --muted: #9aa6c4;
+  --accent: #4da3ff;
+  --danger: #ff5a6e;
+  --border: rgba(255, 255, 255, 0.08);
+  --shadow: rgba(0, 0, 0, 0.45);
+  --hint: rgba(154, 166, 196, 0.95);
+  --list-bg: rgba(15, 22, 38, 0.65);
+  --row-border: rgba(255, 255, 255, 0.06);
+  --flyout-bg: rgba(12, 18, 32, 0.98);
+  --flyout-left-border: rgba(255, 255, 255, 0.08);
+  --selection-bg: rgba(77, 163, 255, 0.16);
+  --selection-bg-soft: rgba(77, 163, 255, 0.12);
+  --selection-bg-hover: rgba(77, 163, 255, 0.14);
+  --selection-bg-item: rgba(77, 163, 255, 0.22);
+  --selection-outline: rgba(77, 163, 255, 0.45);
+  --tab-active-bg: rgba(77, 163, 255, 0.12);
+  --tab-active-border: rgba(77, 163, 255, 0.45);
+  --btn-border: rgba(77, 163, 255, 0.5);
+  --btn-bg: rgba(77, 163, 255, 0.15);
+  --focus-ring: rgba(77, 163, 255, 0.35);
+  --config-bg: rgba(15, 22, 38, 0.65);
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f6fa;
+  --panel: #ffffff;
+  --text: #1a2233;
+  --muted: #5c6b80;
+  --accent: #0b6bcb;
+  --danger: #c62828;
+  --border: rgba(0, 0, 0, 0.1);
+  --shadow: rgba(0, 0, 0, 0.12);
+  --hint: rgba(60, 70, 90, 0.88);
+  --list-bg: rgba(255, 255, 255, 0.92);
+  --row-border: rgba(0, 0, 0, 0.06);
+  --flyout-bg: #ffffff;
+  --flyout-left-border: rgba(0, 0, 0, 0.08);
+  --selection-bg: rgba(11, 107, 203, 0.12);
+  --selection-bg-soft: rgba(11, 107, 203, 0.08);
+  --selection-bg-hover: rgba(11, 107, 203, 0.1);
+  --selection-bg-item: rgba(11, 107, 203, 0.18);
+  --selection-outline: rgba(11, 107, 203, 0.45);
+  --tab-active-bg: rgba(11, 107, 203, 0.1);
+  --tab-active-border: rgba(11, 107, 203, 0.45);
+  --btn-border: rgba(11, 107, 203, 0.45);
+  --btn-bg: rgba(11, 107, 203, 0.12);
+  --focus-ring: rgba(11, 107, 203, 0.35);
+  --config-bg: rgba(255, 255, 255, 0.95);
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Title bar + close removed app-wide; dismiss via blur (click outside) or Esc */
+.app .header {
+  display: none;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.close {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  line-height: 22px;
+  font-size: 16px;
+  padding: 0;
+}
+
+.content {
+  padding: 8px 10px 10px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.tab {
+  flex: 1;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tab.active {
+  border-color: var(--tab-active-border);
+  background: var(--tab-active-bg);
+  color: var(--text);
+}
+
+.section {
+  height: 100%;
+}
+
+/* Let the active panel share vertical space under tabs; min-height:0 enables inner scroll areas */
+.app .content > .section:not(.hidden) {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+/* Clipboard: group list + item panel side by side (not fixed overlay) */
+.clipboard-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.clipboard-split {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+}
+
+.clipboard-split .list.clipboardGrouped {
+  flex: 1 1 50%;
+  min-width: 0;
+  height: 100%;
+  max-height: 100%;
+}
+
+.hidden {
+  display: none;
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.hint {
+  color: var(--hint);
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--list-bg);
+  overflow: auto;
+  height: calc(100% - 28px);
+}
+
+.list:focus {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--focus-ring);
+}
+
+.item {
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--row-border);
+  cursor: pointer;
+}
+.item:last-child {
+  border-bottom: none;
+}
+
+.itemText {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.itemMeta {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.item.selected {
+  background: var(--selection-bg);
+}
+
+/* Cmd+Shift+V: items list is a separate Electron window; hide in-DOM flyout column */
+.app.clipboard-compact-dual .clipboard-flyout-popover {
+  display: none !important;
+}
+
+.app.clipboard-compact-dual .clipboard-split .list.clipboardGrouped {
+  flex: 1 1 100%;
+  max-width: 100%;
+}
+
+/* Cmd+Shift+V main panel: shrink-wrap height to content; locked = window-sized with inner scroll at max */
+html:has(#root.clipboard-compact-dual:not(.clipboard-compact-dual--locked)),
+html:has(#root.clipboard-compact-dual:not(.clipboard-compact-dual--locked)) body {
+  height: auto;
+  min-height: 0;
+}
+
+#root.app.clipboard-compact-dual:not(.clipboard-compact-dual--locked) {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+#root.app.clipboard-compact-dual:not(.clipboard-compact-dual--locked) > .content {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+#root.app.clipboard-compact-dual:not(.clipboard-compact-dual--locked) .clipboard-section {
+  height: auto;
+  min-height: 0;
+}
+
+#root.app.clipboard-compact-dual:not(.clipboard-compact-dual--locked) .clipboard-split {
+  flex: 0 0 auto;
+  min-height: 0;
+  height: auto;
+}
+
+#root.app.clipboard-compact-dual:not(.clipboard-compact-dual--locked) .clipboard-split .list.clipboardGrouped {
+  height: auto;
+  max-height: none;
+  flex: 0 0 auto;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+
+#root.app.clipboard-compact-dual:not(.clipboard-compact-dual--locked).compact-overlay .clipboard-split {
+  height: auto;
+}
+
+#root.app.clipboard-compact-dual:not(.clipboard-compact-dual--locked).compact-overlay .clipboard-split .list.clipboardGrouped {
+  height: auto;
+}
+
+#root.app.clipboard-compact-dual.clipboard-compact-dual--locked {
+  height: 100%;
+  overflow: hidden;
+}
+
+#root.app.clipboard-compact-dual.clipboard-compact-dual--locked > .content {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+}
+
+#root.app.clipboard-compact-dual.clipboard-compact-dual--locked .clipboard-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+#root.app.clipboard-compact-dual.clipboard-compact-dual--locked .clipboard-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+#root.app.clipboard-compact-dual.clipboard-compact-dual--locked .clipboard-split .list.clipboardGrouped {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+html.clipboard-compact-main-sized,
+html.clipboard-compact-main-sized body {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Cmd+Shift+B: items list is a separate window; hide in-DOM flyout column */
+.app.templates-compact-dual .clipboard-flyout-popover {
+  display: none !important;
+}
+
+.app.templates-compact-dual .templates-split .list.templatesGrouped {
+  flex: 1 1 100%;
+  max-width: 100%;
+}
+
+/* Cmd+Shift+B main panel: shrink-wrap height; locked = window-sized with inner scroll at max */
+html:has(#root.templates-compact-dual:not(.templates-compact-dual--locked)),
+html:has(#root.templates-compact-dual:not(.templates-compact-dual--locked)) body {
+  height: auto;
+  min-height: 0;
+}
+
+#root.app.templates-compact-dual:not(.templates-compact-dual--locked) {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+#root.app.templates-compact-dual:not(.templates-compact-dual--locked) > .content {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+#root.app.templates-compact-dual:not(.templates-compact-dual--locked) .templates-section {
+  height: auto;
+  min-height: 0;
+}
+
+#root.app.templates-compact-dual:not(.templates-compact-dual--locked) .templates-list-wrap {
+  flex: 0 0 auto;
+  min-height: 0;
+  height: auto;
+}
+
+#root.app.templates-compact-dual:not(.templates-compact-dual--locked) .templates-split {
+  flex: 0 0 auto;
+  min-height: 0;
+  height: auto;
+}
+
+#root.app.templates-compact-dual:not(.templates-compact-dual--locked) .templates-split .list.templatesGrouped {
+  height: auto;
+  max-height: none;
+  flex: 0 0 auto;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+
+#root.app.templates-compact-dual:not(.templates-compact-dual--locked).compact-overlay .templates-split {
+  height: auto;
+}
+
+#root.app.templates-compact-dual:not(.templates-compact-dual--locked).compact-overlay .templates-split .list.templatesGrouped {
+  height: auto;
+}
+
+#root.app.templates-compact-dual.templates-compact-dual--locked {
+  height: 100%;
+  overflow: hidden;
+}
+
+#root.app.templates-compact-dual.templates-compact-dual--locked > .content {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+}
+
+#root.app.templates-compact-dual.templates-compact-dual--locked .templates-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+#root.app.templates-compact-dual.templates-compact-dual--locked .templates-list-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+#root.app.templates-compact-dual.templates-compact-dual--locked .templates-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+#root.app.templates-compact-dual.templates-compact-dual--locked .templates-split .list.templatesGrouped {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+html.templates-compact-main-sized,
+html.templates-compact-main-sized body {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Clipboard: slim list + fixed flyout (hover or ↑/↓) */
+.list.clipboardGrouped {
+  overflow-x: hidden;
+}
+
+.clip-group-wrap {
+  position: relative;
+  min-height: 28px;
+  border-bottom: 1px solid var(--row-border);
+  cursor: default;
+}
+
+.clip-group-wrap:last-child {
+  border-bottom: none;
+}
+
+.clip-group-wrap.selected {
+  background: var(--selection-bg-soft);
+}
+
+.clip-group-row {
+  padding: 6px 8px;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.clip-group-row .chevron {
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.clipboard-flyout-popover {
+  position: relative;
+  flex: 1 1 50%;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--flyout-bg);
+  box-shadow: 0 4px 16px var(--shadow);
+}
+
+.clipboard-split .clipboard-flyout-popover:not(.hidden) {
+  border-left: 1px solid var(--flyout-left-border);
+}
+
+.clipboard-flyout-popover.hidden {
+  display: none;
+}
+
+.clip-flyout-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  overflow: hidden;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.clip-flyout-item {
+  font-size: 11px;
+  color: var(--text);
+  padding: 5px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  word-break: break-word;
+}
+
+.clip-flyout-item:hover {
+  background: var(--selection-bg-hover);
+}
+
+.clip-flyout-item.selected {
+  background: var(--selection-bg-item);
+  outline: 1px solid var(--selection-outline);
+}
+
+.clip-flyout-item .meta {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.clip-flyout-empty {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 6px 4px;
+}
+
+/* Cmd+Shift+V / Cmd+Shift+B slim overlay (same main window, no tab bar; compact items may be a second window) */
+.app.compact-overlay .tabs {
+  display: none;
+}
+
+.app.compact-overlay .sectionHeader {
+  display: none;
+}
+
+.app.compact-overlay .content {
+  padding: 2px 4px 4px;
+}
+
+.app.quick-todo .content {
+  flex: 0 0 auto;
+  padding: 8px 8px;
+  overflow: visible;
+}
+
+html:has(.app.quick-todo),
+body:has(.app.quick-todo) {
+  height: auto;
+  min-height: 0;
+}
+
+.app.quick-todo {
+  height: auto;
+  min-height: 0;
+}
+
+.templates-section,
+.todos-section,
+.quick-todo-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Prevent global `.section { height: 100% }` from stretching a short form and leaving a dead band. */
+.app.quick-todo .quick-todo-section {
+  height: auto !important;
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.app.quick-todo .tabs {
+  display: none;
+}
+
+.quick-todo-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 0;
+}
+
+.app.quick-todo .quick-todo-form.quick-todo-form-inline {
+  padding: 0;
+  gap: 8px;
+}
+
+.quick-todo-form-inline {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 0;
+  min-width: 0;
+}
+
+.quick-todo-form-inline .input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.app.quick-todo .quick-todo-form-inline .input {
+  height: 39px;
+  min-height: 39px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  box-sizing: border-box;
+}
+
+.app.compact-overlay .quick-todo-section {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+
+.templates-list-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.templates-split {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+}
+
+.templates-split .list.templatesGrouped {
+  flex: 1 1 50%;
+  min-width: 0;
+  height: 100%;
+  max-height: 100%;
+}
+
+.list.templatesGrouped {
+  overflow-x: hidden;
+}
+
+.app.compact-overlay .templateModeRow {
+  display: none;
+}
+
+.app.compact-overlay .clipboard-split {
+  height: calc(100% - 4px);
+}
+
+.app.compact-overlay .templates-split {
+  height: calc(100% - 4px);
+}
+
+.app.compact-overlay .clipboard-split .list.clipboardGrouped {
+  border-radius: 6px;
+  height: 100%;
+}
+
+.app.compact-overlay .templates-split .list.templatesGrouped {
+  border-radius: 6px;
+  height: 100%;
+}
+
+.app.compact-overlay .list {
+  height: calc(100% - 4px);
+}
+
+.templateModeRow {
+  margin-bottom: 8px;
+}
+
+.templateMode {
+  display: flex;
+  gap: 6px;
+}
+
+.tab.tabSmall {
+  flex: 0;
+  padding: 6px 10px;
+  width: 50%;
+}
+
+.configWrap {
+  height: calc(100% - 28px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--config-bg);
+  padding: 10px;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.fieldRow label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 8px;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.select {
+  cursor: pointer;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) calc(50% - 2px), calc(100% - 13px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+}
+
+.textarea {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 8px;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  resize: vertical;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  flex: 1;
+  border-radius: 10px;
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn.secondary {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--muted);
+}
+
+.status {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 12px 0;
+}
+
+.configListHeader {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.configList {
+  height: 220px;
+}
+
+.todos-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: calc(100% - 28px);
+  min-height: 0;
+}
+
+.todos-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.todos-input-row .input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  box-sizing: border-box;
+}
+
+.todo-date-field {
+  flex: 0 0 auto;
+  width: 132px;
+  min-width: 132px;
+  max-width: 132px;
+}
+
+.todo-date-inline {
+  flex: 0 0 auto;
+  width: 118px;
+  min-width: 118px;
+  max-width: 118px;
+  padding: 2px 4px;
+  font-size: 11px;
+  height: 28px;
+  box-sizing: border-box;
+}
+
+.todo-add-btn {
+  flex: 0 0 auto;
+  min-width: 56px;
+  padding: 6px 10px;
+}
+
+.todo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.chip {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--list-bg);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.chip:hover {
+  color: var(--text);
+  border-color: var(--tab-active-border);
+}
+
+.chip.active {
+  border-color: var(--tab-active-border);
+  background: var(--tab-active-bg);
+  color: var(--text);
+}
+
+.list.todo-list {
+  flex: 1;
+  min-height: 120px;
+  height: auto;
+}
+
+.todo-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 5px 8px;
+  min-height: 32px;
+  border-bottom: 1px solid var(--row-border);
+  cursor: default;
+  min-width: 0;
+}
+
+.todo-row:last-child {
+  border-bottom: none;
+}
+
+.todo-row input[type="checkbox"] {
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
+
+.todo-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.todo-row.done .todo-text {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.todo-del {
+  flex-shrink: 0;
+  padding: 0;
+  font-size: 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.todo-del-icon {
+  width: 26px;
+  height: 26px;
+  line-height: 22px;
+  font-size: 18px;
+  font-weight: 600;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.todo-del:hover {
+  color: var(--danger);
+  border-color: rgba(255, 90, 110, 0.45);
+}
+
+.todos-footer {
+  flex-shrink: 0;
+}
+
+.todos-footer .btn {
+  flex: 0 0 auto;
+}
+
+/* Option+Shift+D — today's focus panel */
+html:has(.app.todo-today-peek),
+body:has(.app.todo-today-peek) {
+  height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+}
+
+.app.todo-today-peek {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app.todo-today-peek .tabs {
+  display: none;
+}
+
+.app.todo-today-peek .content {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 10px 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: stretch;
+}
+
+.app.todo-today-peek .todos-today-section.section {
+  height: auto !important;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.todos-today-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.todos-today-hero {
+  flex-shrink: 0;
+  padding: 12px 12px 14px;
+  border-radius: 12px;
+  margin-bottom: 8px;
+  background: linear-gradient(
+    135deg,
+    rgba(77, 163, 255, 0.14) 0%,
+    rgba(77, 163, 255, 0.04) 50%,
+    rgba(15, 22, 38, 0.4) 100%
+  );
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 12px var(--shadow);
+}
+
+:root[data-theme="light"] .todos-today-hero {
+  background: linear-gradient(
+    135deg,
+    rgba(11, 107, 203, 0.1) 0%,
+    rgba(11, 107, 203, 0.03) 55%,
+    rgba(255, 255, 255, 0.85) 100%
+  );
+}
+
+.todos-today-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.todos-today-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.todos-today-date {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin-top: 4px;
+  line-height: 1.2;
+}
+
+.todos-today-count {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.todos-today-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 -2px;
+  padding: 0 2px 4px;
+  contain: layout paint;
+}
+
+.todos-today-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.todos-today-empty {
+  list-style: none;
+  margin: 0;
+  padding: 20px 12px 28px;
+}
+
+.todos-today-empty-inner {
+  text-align: center;
+  padding: 8px 4px;
+}
+
+.todos-today-empty-ring {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 12px;
+  border-radius: 50%;
+  border: 2px dashed var(--border);
+  opacity: 0.75;
+}
+
+.todos-today-empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.todos-today-empty-sub {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.todos-today-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--list-bg);
+  border: 1px solid var(--row-border);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="light"] .todos-today-card {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .todos-today-card:hover {
+    border-color: rgba(77, 163, 255, 0.28);
+  }
+
+  :root[data-theme="light"] .todos-today-card:hover {
+    border-color: rgba(11, 107, 203, 0.25);
+  }
+}
+
+.todos-today-card.done {
+  opacity: 0.72;
+}
+
+.todos-today-card input[type="checkbox"] {
+  margin: 2px 0 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+}
+
+.todos-today-card-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.todos-today-card.done .todos-today-card-text {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.todos-today-card-del {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.todos-today-card-del:hover {
+  color: var(--danger);
+  border-color: rgba(255, 90, 110, 0.45);
+}
+
+.todos-today-add {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 8px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.todos-today-input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  box-sizing: border-box;
+  border-radius: 9px;
+  font-size: 13px;
+}
+
+.todos-today-add-btn {
+  flex: 0 0 auto;
+  min-width: 56px;
+  padding: 8px 12px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Info (tray → Info) — column + clip so only .info-scroll scrolls */
+.app .content > .info-section.section {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.info-section .sectionHeader {
+  flex-shrink: 0;
+}
+
+.info-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px 2px 8px 0;
+}
+
+.info-block {
+  margin-bottom: 18px;
+}
+
+.info-block:last-child {
+  margin-bottom: 0;
+}
+
+.info-block-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 8px;
+}
+
+.info-lead {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.45;
+  margin: 0 0 10px;
+}
+
+.info-block-tight {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.info-footer {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
+  text-align: center;
+}
+
+.info-note {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 12px 0 0;
+}
+
+.info-note strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.info-shortcuts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.info-shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--row-border);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.info-shortcut-row:last-child {
+  border-bottom: none;
+}
+
+.info-shortcut-desc {
+  flex: 1;
+  min-width: 140px;
+  color: var(--text);
+}
+
+.info-kbd-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5em;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--list-bg);
+  color: var(--text);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+}
+
+:root[data-theme="light"] .kbd {
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
+}
+
+.info-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.info-list li {
+  margin-bottom: 8px;
+}
+
+.info-list li:last-child {
+  margin-bottom: 0;
+}
+
+.info-list strong {
+  font-weight: 600;
+}
+
+/* Separate BrowserWindow for clipboard / SavedClip items (compact shortcut) */
+html.clipboard-flyout-doc:not(.flyout-sized) body.flyout-window-body,
+html.templates-flyout-doc:not(.flyout-sized) body.flyout-window-body {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+html.clipboard-flyout-doc.flyout-sized body.flyout-window-body,
+html.templates-flyout-doc.flyout-sized body.flyout-window-body {
+  height: 100vh;
+  overflow: hidden;
+}
+
+body.flyout-window-body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+html.clipboard-flyout-doc:not(.flyout-sized) .flyout-root,
+html.templates-flyout-doc:not(.flyout-sized) .flyout-root {
+  height: auto;
+  min-height: 0;
+}
+
+.flyout-root {
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+html.clipboard-flyout-doc:not(.flyout-sized) .clipboard-flyout-popover-inner,
+html.templates-flyout-doc:not(.flyout-sized) .clipboard-flyout-popover-inner {
+  flex: 0 0 auto;
+  max-height: none;
+  overflow: visible;
+}
+
+.clipboard-flyout-popover-inner {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--flyout-bg);
+  box-shadow: 0 4px 16px var(--shadow);
+}
+

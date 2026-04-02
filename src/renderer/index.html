@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClipNinja</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="root" class="app">
+      <header class="header">
+        <div class="title" id="modeTitle">Clipboard</div>
+        <button class="close" id="closeBtn" aria-label="Close">×</button>
+      </header>
+
+      <main class="content">
+        <div class="tabs">
+          <button class="tab" id="tabClipboard" type="button">Clipboard</button>
+          <button class="tab" id="tabTemplates" type="button">Templates</button>
+          <button class="tab" id="tabTodos" type="button">Todos</button>
+          <button class="tab" id="tabSettings" type="button">Settings</button>
+        </div>
+
+        <section id="clipboardSection" class="section clipboard-section">
+          <div class="sectionHeader">
+            <span>Clip groups</span>
+            <span class="hint">↑↓ list · → items · ← back · Enter paste</span>
+          </div>
+          <div class="clipboard-split">
+            <ul id="clipboardList" class="list clipboardGrouped" role="listbox" tabindex="0" aria-label="Clipboard groups"></ul>
+            <div id="clipboardFlyout" class="clipboard-flyout-popover hidden" aria-hidden="true"></div>
+          </div>
+        </section>
+
+        <section id="templatesSection" class="section templates-section hidden">
+          <div class="sectionHeader">
+            <span>Preconfigured templates</span>
+            <span class="hint">↑↓ groups · → items · ← back · Enter paste</span>
+          </div>
+
+          <div class="templateModeRow">
+            <div class="templateMode">
+              <button class="tab tabSmall" id="listModeBtn" type="button">List</button>
+              <button class="tab tabSmall active" id="configModeBtn" type="button">Configure</button>
+            </div>
+          </div>
+
+          <div id="templatesListWrap" class="hidden templates-list-wrap">
+            <div class="templates-split">
+              <ul id="templatesGroupList" class="list templatesGrouped" role="listbox" tabindex="0" aria-label="Template groups"></ul>
+              <div id="templatesFlyout" class="clipboard-flyout-popover hidden" aria-hidden="true"></div>
+            </div>
+          </div>
+
+          <div id="templatesConfigWrap" class="configWrap">
+            <div class="form">
+              <div class="fieldRow">
+                <label>Group</label>
+                <input id="tmplGroup" class="input" type="text" maxlength="80" placeholder="General" />
+              </div>
+              <div class="fieldRow">
+                <label>Name</label>
+                <input id="tmplName" class="input" type="text" maxlength="80" placeholder="e.g. Email sign-off" />
+              </div>
+              <div class="fieldRow">
+                <label>Text</label>
+                <textarea id="tmplText" class="textarea" maxlength="5000" placeholder="Type the template text..." rows="4"></textarea>
+              </div>
+              <div class="actions">
+                <button class="btn" id="saveTemplateBtn" type="button">Save</button>
+              </div>
+              <div id="saveStatus" class="status" aria-live="polite"></div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="configListHeader">
+              <span>Saved templates</span>
+            </div>
+            <ul id="templatesConfigList" class="list configList" role="listbox" aria-label="Saved templates"></ul>
+          </div>
+        </section>
+
+        <section id="todosSection" class="section todos-section hidden">
+          <div class="sectionHeader">
+            <span>Todo list</span>
+            <span class="hint">Task text · target date (defaults to today) · check off when done</span>
+          </div>
+          <div class="todos-wrap">
+            <div class="todos-input-row">
+              <input id="todoInput" class="input" type="text" maxlength="500" placeholder="New task…" autocomplete="off" />
+              <input id="todoDateInput" class="input todo-date-field" type="date" title="Target date" aria-label="Target date" />
+              <button class="btn todo-add-btn" id="todoAddBtn" type="button">Add</button>
+            </div>
+            <div id="todoChips" class="todo-chips" role="tablist" aria-label="Filter by target date">
+              <button type="button" class="chip active" role="tab" data-filter="all" aria-selected="true">All</button>
+              <button type="button" class="chip" role="tab" data-filter="today" aria-selected="false">Today</button>
+              <button type="button" class="chip" role="tab" data-filter="tomorrow" aria-selected="false">Tomorrow</button>
+              <button type="button" class="chip" role="tab" data-filter="week" aria-selected="false">Week</button>
+              <button type="button" class="chip" role="tab" data-filter="month" aria-selected="false">Month</button>
+            </div>
+            <ul id="todoList" class="list todo-list" role="list" aria-label="Tasks"></ul>
+            <div class="todos-footer">
+              <button class="btn secondary" id="todoClearDoneBtn" type="button">Clear completed</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="todoQuickAddSection" class="section quick-todo-section hidden">
+          <div class="quick-todo-form quick-todo-form-inline">
+            <input
+              id="todoQuickInput"
+              class="input"
+              type="text"
+              maxlength="500"
+              placeholder="Task…"
+              autocomplete="off"
+              title="Enter to save · Esc to close"
+            />
+            <input id="todoQuickDate" class="input todo-date-field" type="date" title="Target date" aria-label="Target date" />
+          </div>
+        </section>
+
+        <section id="todosTodaySection" class="section todos-today-section hidden" aria-label="Today's tasks">
+          <div class="todos-today-hero">
+            <div class="todos-today-hero-top">
+              <span class="todos-today-kicker">Today</span>
+            </div>
+            <div class="todos-today-date" id="todosTodayDateLabel"></div>
+            <div class="todos-today-count" id="todosTodayCount" aria-live="polite"></div>
+          </div>
+          <div class="todos-today-scroll">
+            <ul id="todosTodayList" class="todos-today-list" role="list"></ul>
+          </div>
+          <div class="todos-today-add">
+            <input
+              id="todosTodayQuickInput"
+              class="input todos-today-input"
+              type="text"
+              maxlength="500"
+              placeholder="Add a task for today…"
+              autocomplete="off"
+              title="Enter to add · Esc to close"
+            />
+            <button type="button" class="btn todos-today-add-btn" id="todosTodayAddBtn">Add</button>
+          </div>
+        </section>
+
+        <section id="infoSection" class="section info-section hidden" aria-labelledby="infoHeading">
+          <div class="sectionHeader">
+            <span id="infoHeading">ClipNinja</span>
+            <span class="hint">Features &amp; shortcuts</span>
+          </div>
+          <div id="infoScroll" class="info-scroll" tabindex="-1" role="region" aria-label="About ClipNinja">
+            <div class="info-block">
+              <h3 class="info-block-title">Global shortcuts</h3>
+              <p class="info-lead">These work from any app while ClipNinja is running.</p>
+              <ul class="info-shortcuts">
+                <li class="info-shortcut-row">
+                  <span class="info-shortcut-desc">Open clipboard history (compact overlay)</span>
+                  <span class="info-kbd-group"><kbd class="kbd">⌘</kbd><kbd class="kbd">⇧</kbd><kbd class="kbd">V</kbd></span>
+                </li>
+                <li class="info-shortcut-row">
+                  <span class="info-shortcut-desc">Open saved templates / SavedClip</span>
+                  <span class="info-kbd-group"><kbd class="kbd">⌘</kbd><kbd class="kbd">⇧</kbd><kbd class="kbd">B</kbd></span>
+                </li>
+                <li class="info-shortcut-row">
+                  <span class="info-shortcut-desc">Quick add a todo</span>
+                  <span class="info-kbd-group"><kbd class="kbd">⌘</kbd><kbd class="kbd">⇧</kbd><kbd class="kbd">D</kbd></span>
+                </li>
+                <li class="info-shortcut-row">
+                  <span class="info-shortcut-desc">Today’s todo list (focus view)</span>
+                  <span class="info-kbd-group"><kbd class="kbd">⌥</kbd><kbd class="kbd">⇧</kbd><kbd class="kbd">D</kbd></span>
+                </li>
+              </ul>
+              <p class="info-note">On the keyboard: Command+Shift+V/B/D, Option+Shift+D. If a shortcut does nothing, check <strong>System Settings → Keyboard → Keyboard Shortcuts</strong> for conflicts.</p>
+            </div>
+
+            <div class="info-block">
+              <h3 class="info-block-title">Menu bar</h3>
+              <p class="info-lead">Click the ClipNinja icon in the menu bar to open:</p>
+              <ul class="info-list">
+                <li><strong>Clipboard</strong> — recent clips by app group; open full UI or paste from the list.</li>
+                <li><strong>SavedClip</strong> — saved templates; open full UI or paste.</li>
+                <li><strong>Todos</strong> — full todo list, filters, dates, and clear completed.</li>
+                <li><strong>Quick add todo</strong> — small overlay to add a task with a date.</li>
+                <li><strong>Today’s todos</strong> — today-only list with add, check off, and delete.</li>
+                <li><strong>Settings</strong> — theme, launch at login, clipboard/template limits.</li>
+                <li><strong>Info</strong> — this screen.</li>
+              </ul>
+            </div>
+
+            <div class="info-block">
+              <h3 class="info-block-title">Features</h3>
+              <ul class="info-list">
+                <li><strong>Clipboard</strong> — history grouped by source app; arrow keys to browse; <strong>Enter</strong> pastes into the app that was focused when you opened the overlay.</li>
+                <li><strong>Templates</strong> — list and configure reusable text snippets (SavedClip).</li>
+                <li><strong>Todos</strong> — tasks with target dates; filter chips (All, Today, Tomorrow, Week, Month).</li>
+                <li><strong>Quick add</strong> — minimal strip; <strong>Enter</strong> saves, <strong>Esc</strong> closes; clicking outside closes.</li>
+                <li><strong>Today’s view</strong> — scrollable list; <strong>Esc</strong> closes; clicking outside closes.</li>
+                <li><strong>Theme</strong> — System, Dark, or Light in Settings.</li>
+              </ul>
+            </div>
+
+            <div class="info-block info-block-tight">
+              <p class="info-footer">ClipNinja — clipboard, templates, and todos for macOS.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="settingsSection" class="section hidden">
+          <div class="sectionHeader">
+            <span>Settings</span>
+            <span class="hint">Minimal demo</span>
+          </div>
+
+          <div class="configWrap">
+            <div class="form">
+              <div class="fieldRow">
+                <label>Startup</label>
+                <button class="btn secondary" id="toggleStartupBtnSettings" type="button">Loading...</button>
+              </div>
+
+              <div class="fieldRow">
+                <label>Theme</label>
+                <select id="themeSelect" class="input select" aria-label="Appearance theme">
+                  <option value="system">System</option>
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                </select>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="fieldRow">
+                <label>Clipboard: No of Groups</label>
+                <input id="setClipboardGroups" class="input" type="number" min="1" max="20" step="1" />
+              </div>
+              <div class="fieldRow">
+                <label>Clipboard: No of Group items</label>
+                <input id="setClipboardPerGroup" class="input" type="number" min="1" max="20" step="1" />
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="fieldRow">
+                <label>SavedClips: No of Groups</label>
+                <input id="setSavedGroupsMax" class="input" type="number" min="1" max="20" step="1" />
+              </div>
+              <div class="fieldRow">
+                <label>SavedClips: No of Group items</label>
+                <input id="setSavedPerGroup" class="input" type="number" min="1" max="20" step="1" />
+              </div>
+
+              <div class="actions">
+                <button class="btn" id="saveSettingsBtn" type="button">Save settings</button>
+              </div>
+              <div id="settingsStatus" class="status" aria-live="polite"></div>
+
+              <div class="status" id="settingsHelp" aria-live="polite">
+                Use `Cmd+Shift+V` to open Clipboard and `Cmd+Shift+B` for SavedCip.
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
+

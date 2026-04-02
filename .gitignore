@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build / packaging (electron-builder)
+release/
+dist/
+out/
+*.dmg
+*.zip
+*.blockmap
+*.asar
+
+# OS / editor
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# Debug / local
+*.local

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="a" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#152238"/>
+      <stop offset="100%" stop-color="#060a12"/>
+    </linearGradient>
+    <linearGradient id="b" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#5eb0ff"/>
+      <stop offset="100%" stop-color="#2d8ae8"/>
+    </linearGradient>
+    <linearGradient id="c" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#dbe4ee"/>
+    </linearGradient>
+    <linearGradient id="d" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e2ebf5"/>
+      <stop offset="100%" stop-color="#b8c5d6"/>
+    </linearGradient>
+  </defs>
+  <rect x="48" y="48" width="416" height="416" rx="96" fill="url(#a)"/>
+  <rect x="48" y="48" width="416" height="416" rx="96" fill="none" stroke="#3d7fc9" stroke-width="4" opacity="0.35"/>
+  <path d="M176 140h160c12 0 22 10 22 22v36c0 14-12 26-26 26H180c-14 0-26-12-26-26v-36c0-12 10-22 22-22z" fill="url(#b)"/>
+  <ellipse cx="256" cy="168" rx="44" ry="18" fill="#1a3a5c" opacity="0.35"/>
+  <rect x="152" y="208" width="208" height="220" rx="28" fill="url(#c)"/>
+  <path d="M312 208h76v76l-76-76z" fill="url(#d)"/>
+  <path d="M196 288c18-22 46-22 64 0-18 22-46 22-64 0zm56 0c18-22 46-22 64 0-18 22-46 22-64 0z" fill="#0f172a"/>
+  <path d="M228 292c8-6 20-6 28 0-8 6-20 6-28 0zm28 0c8-6 20-6 28 0-8 6-20 6-28 0z" fill="#4da3ff" opacity="0.9"/>
+  <g transform="translate(352 360)">
+    <circle r="6" fill="#4da3ff"/>
+    <path d="M0-14L3-3 14 0 3 3 0 14-3 3-14 0-3-3z" fill="#e8eefc"/>
+  </g>
+  <rect x="236" y="132" width="40" height="14" rx="7" fill="#1e4976" opacity="0.6"/>
+</svg>

@@ -1,0 +1,39 @@
+{
+  "name": "clipninja",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal clipboard and template manager for macOS (Cmd+Shift+V / Cmd+Shift+B).",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "lint": "echo \"No linter configured\"",
+    "dev": "electron .",
+    "dist": "electron-builder --mac",
+    "dist:dmg": "electron-builder --mac dmg",
+    "mac:reset-apple-events": "bash -c 'echo \"Resetting Apple Events (Automation) for all apps. You will be prompted again.\"; tccutil reset AppleEvents'",
+    "icon:png": "sips -s format png assets/icon.svg --out assets/icon.png || true"
+  },
+  "dependencies": {
+    "auto-launch": "^5.0.6",
+    "electron-store": "^10.0.0"
+  },
+  "devDependencies": {
+    "electron": "^31.5.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.clipninja.app",
+    "productName": "ClipNinja",
+    "icon": "assets/icon.png",
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": ["dmg", "zip"],
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "ClipNinja uses Automation to detect the app you were using and to paste text into its text field via System Events."
+      }
+    }
+  }
+}
