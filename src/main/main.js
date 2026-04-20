@@ -18,7 +18,7 @@ const AutoLaunch = require("auto-launch");
 
 const APP_NAME = "ClipNinja";
 // Must stay in sync with template textarea maxlength in src/renderer/index.html (saved clips + paste).
-const MAX_TEXT_CHARS = 5000;
+const MAX_TEXT_CHARS = 25000;
 const MAX_TODO_TEXT = 500;
 const MAX_TODOS = 500;
 /** Quick-add (Cmd+Shift+D): tight height; width = 8× height (wide strip). */
@@ -78,6 +78,59 @@ let templatesFlyoutPeerHoverMain = false;
 /** Blur/focus races on macOS: same-tick getFocusedWindow() can be stale; debounce dismiss. */
 let hidePanelBlurTimer = null;
 const PANEL_BLUR_DISMISS_MS = 140;
+
+/** When true, we route keyboard nav via temporary globalShortcuts (no app activation). */
+let overlayNavEnabled = false;
+let overlayNavRegistered = false;
+
+function sendOverlayNavKey(key) {
+  if (!panelWindow || panelWindow.isDestroyed()) return;
+  try {
+    panelWindow.webContents.send("ui:nav-key", { key: String(key || "") });
+  } catch (_) {
+    // ignore
+  }
+}
+
+function enableOverlayNavShortcuts() {
+  if (overlayNavRegistered) return;
+  if (!overlayNavEnabled) return;
+  // Register only while our overlay is visible; avoid stealing focus by keeping ClipNinja inactive.
+  // These shortcuts override arrow keys globally, so keep the scope as narrow as possible.
+  const bindings = [
+    ["Up", "ArrowUp"],
+    ["Down", "ArrowDown"],
+    ["Left", "ArrowLeft"],
+    ["Right", "ArrowRight"],
+    ["Escape", "Escape"],
+    ["Enter", "Enter"],
+    ["Return", "Enter"],
+    ["E", "E"],
+  ];
+  let okAny = false;
+  for (const [accel, key] of bindings) {
+    try {
+      const ok = globalShortcut.register(accel, () => sendOverlayNavKey(key));
+      okAny = okAny || ok;
+    } catch (_) {
+      // ignore
+    }
+  }
+  overlayNavRegistered = okAny;
+}
+
+function disableOverlayNavShortcuts() {
+  if (!overlayNavRegistered) return;
+  const accels = ["Up", "Down", "Left", "Right", "Escape", "Enter", "Return", "E"];
+  for (const a of accels) {
+    try {
+      globalShortcut.unregister(a);
+    } catch (_) {
+      // ignore
+    }
+  }
+  overlayNavRegistered = false;
+}
 let currentMode = "clipboard"; // 'clipboard' | 'templates' | 'todos' | 'settings' | 'todoQuickAdd' | 'todosToday'
 let uiUpdatePending = null;
 
@@ -195,6 +248,29 @@ function captureFrontmostPidSync() {
     target = lastSeenForeignFrontmostPid;
   }
   lastFrontmostPid = target;
+}
+
+function isFrontmostAppFullScreenSync() {
+  if (process.platform !== "darwin") return false;
+  // Best-effort: when a fullscreen app is frontmost, activating another app can jump Spaces.
+  // If this query fails (accessibility/automation), fall back to normal behavior.
+  const r = runOsascriptSync([
+    "-e",
+    [
+      'tell application "System Events"',
+      "  try",
+      "    set frontProc to first process whose frontmost is true",
+      "    set frontWin to first window of frontProc",
+      '    set isFs to value of attribute "AXFullScreen" of frontWin',
+      "    return isFs as boolean",
+      "  on error",
+      "    return false",
+      "  end try",
+      "end tell",
+    ].join("\n"),
+  ]);
+  const out = String(r.stdout || "").trim().toLowerCase();
+  return r.ok && (out === "true" || out === "yes" || out === "1");
 }
 
 function activatePidSync(pid) {
@@ -824,6 +900,15 @@ function hidePanelAndFlyoutsIfNoFocus() {
   if (panelWindow && !panelWindow.isDestroyed() && panelWindow.isFocused()) return;
   if (clipboardFlyoutWindow && !clipboardFlyoutWindow.isDestroyed() && clipboardFlyoutWindow.isFocused()) return;
   if (templatesFlyoutWindow && !templatesFlyoutWindow.isDestroyed() && templatesFlyoutWindow.isFocused()) return;
+
+  // Peer-hover blocks dismiss so the panel can blur while the pointer moves to the non-focusable
+  // flyout. If focus left ClipNinja entirely, mouseleave may never run — stale true would keep the
+  // flyout open for hours.
+  if (!focused || !isOurPanelOrFlyoutWindow(focused)) {
+    clipboardFlyoutPeerHoverMain = false;
+    templatesFlyoutPeerHoverMain = false;
+  }
+
   if (clipboardFlyoutPeerHoverMain && clipboardFlyoutWindow && clipboardFlyoutWindow.isVisible()) return;
   if (templatesFlyoutPeerHoverMain && templatesFlyoutWindow && templatesFlyoutWindow.isVisible()) return;
   hideClipboardFlyoutWindow();
@@ -835,6 +920,7 @@ function hidePanelAndFlyoutsIfNoFocus() {
       // ignore
     }
   }
+  disableOverlayNavShortcuts();
 }
 
 function scheduleHidePanelIfLostFocus() {
@@ -852,8 +938,16 @@ function onPanelOrFlyoutBlur() {
 function setupPanelBlurDismiss() {
   app.on("browser-window-blur", (_event, win) => {
     if (!panelWindow || panelWindow.isDestroyed()) return;
-    if (!panelWindow.isVisible()) return;
     if (!isOurPanelOrFlyoutWindow(win)) return;
+    const anyOursVisible =
+      panelWindow.isVisible() ||
+      (clipboardFlyoutWindow &&
+        !clipboardFlyoutWindow.isDestroyed() &&
+        clipboardFlyoutWindow.isVisible()) ||
+      (templatesFlyoutWindow &&
+        !templatesFlyoutWindow.isDestroyed() &&
+        templatesFlyoutWindow.isVisible());
+    if (!anyOursVisible) return;
     scheduleHidePanelIfLostFocus();
   });
   app.on("browser-window-focus", (_event, win) => {
@@ -1056,6 +1150,7 @@ function ensurePanelVisible(mode, opts = {}) {
 
   if (mode !== "clipboard") hideClipboardFlyoutWindow();
   if (mode !== "templates") hideTemplatesFlyoutWindow();
+  overlayNavEnabled = process.platform === "darwin" && fromShortcut && (mode === "clipboard" || mode === "templates");
 
   // Tray / non-shortcut opens: do not restore an old PID on paste.
   if (!fromShortcut) {
@@ -1100,14 +1195,51 @@ function ensurePanelVisible(mode, opts = {}) {
   if (win.webContents.isLoading()) uiUpdatePending = message;
   else win.webContents.send("ui:update", message);
 
-  if (process.platform === "darwin" && typeof app.show === "function") {
-    app.show();
-  }
   if (!win.isVisible()) {
-    win.show();
+    // On macOS, activating this app can switch Spaces / steal focus (notably from Chrome).
+    // Prefer showing inactive for global shortcuts so the current app stays active.
+    if (process.platform === "darwin" && fromShortcut && typeof win.showInactive === "function") {
+      win.showInactive();
+    } else {
+      win.show();
+    }
   }
-  // Focus must move to ClipNinja so arrow keys navigate the overlay; paste still targets the
-  // app captured in captureFrontmostPidSync() before this window was shown.
+  // When shown inactive, the panel won't receive key events until clicked.
+  const shouldAvoidActivation =
+    process.platform === "darwin" && fromShortcut && typeof win.showInactive === "function";
+  if (!shouldAvoidActivation) {
+    // Focus must move to ClipNinja so arrow keys navigate the overlay; paste still targets the
+    // app captured in captureFrontmostPidSync() before this window was shown.
+    win.focus();
+    try {
+      win.webContents.focus();
+    } catch (_) {
+      // ignore
+    }
+    if (process.platform === "darwin" && typeof app.focus === "function") {
+      app.focus({ steal: true });
+    }
+  }
+  enableOverlayNavShortcuts();
+}
+
+function openTemplatesEditor(templateId) {
+  currentMode = "templates";
+  overlayNavEnabled = false;
+  disableOverlayNavShortcuts();
+  hideClipboardFlyoutWindow();
+  hideTemplatesFlyoutWindow();
+
+  const win = createPanelWindow();
+  win.setSize(420, 560);
+  positionPanelWindow({ fromShortcut: false });
+
+  const payload = buildModePayload("templates");
+  const message = { mode: "templates", ...payload, compact: false, editTemplateId: templateId || null };
+  if (win.webContents.isLoading()) uiUpdatePending = message;
+  else win.webContents.send("ui:update", message);
+
+  if (!win.isVisible()) win.show();
   win.focus();
   try {
     win.webContents.focus();
@@ -1237,16 +1369,6 @@ async function pasteText(text) {
     if (!pasteKey.ok) {
       pasteKey = macOsascriptGlobalKeyCodeV();
     }
-
-    setTimeout(() => {
-      try {
-        if (typeof app.show === "function") {
-          app.show();
-        }
-      } catch (_) {
-        // ignore
-      }
-    }, 120);
 
     clearTimeout(clearSuppress);
     suppressClipboardEvent = false;
@@ -1397,6 +1519,12 @@ function bindIpc() {
     hideClipboardFlyoutWindow();
     hideTemplatesFlyoutWindow();
     if (panelWindow && panelWindow.isVisible()) panelWindow.hide();
+    overlayNavEnabled = false;
+    disableOverlayNavShortcuts();
+  });
+
+  ipcMain.on("ui:open-templates-editor", (_evt, { id } = {}) => {
+    openTemplatesEditor(id);
   });
 
   ipcMain.on("clipboard-flyout:sync", (_evt, payload) => {

@@ -1096,7 +1096,27 @@ function showMode(mode, payload) {
     lastTemplatesGrouped = payload?.templatesGrouped || [];
     lastTemplatesAll = payload?.templatesAll || [];
     if (payload?.settings) applyThemeFromSettings(payload.settings);
-    setTemplateView("list");
+    const editId = payload?.editTemplateId || null;
+    if (editId) {
+      setTemplateView("configure");
+      const t = (lastTemplatesAll || []).find((x) => x && x.id === editId);
+      if (t) {
+        editingTemplateId = t.id;
+        if (tmplGroup) tmplGroup.value = t.group || "";
+        if (tmplName) tmplName.value = t.name || "";
+        if (tmplText) tmplText.value = t.text || "";
+        clearStatus();
+        requestAnimationFrame(() => {
+          try {
+            tmplText?.focus?.();
+          } catch (_) {
+            // ignore
+          }
+        });
+      }
+    } else {
+      setTemplateView("list");
+    }
     renderTemplatesConfigList(lastTemplatesAll);
     focusPanelKeyboardTarget();
     return;
@@ -1327,6 +1347,20 @@ function onKeyDown(ev) {
   }
 
   if (uiMode === "templates" && templateView === "list" && templateGroupRows.length) {
+    if (ev.key === "e" || ev.key === "E") {
+      ev.preventDefault();
+      const g = templateGroupRows[selectedIndex];
+      if (!g || !g.items?.length) return;
+      const t = templateNavPane === "items" ? g.items[templateItemIndex] : g.items[0];
+      if (t?.id) {
+        try {
+          api.openTemplatesEditor(t.id);
+        } catch (_) {
+          // ignore
+        }
+      }
+      return;
+    }
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(ev.key)) {
       ev.preventDefault();
       templateKeyboardNav = true;
@@ -1614,4 +1648,17 @@ api.onThemeChange(({ effective }) => {
 api.onUiUpdate((payload) => {
   showMode(payload.mode, payload);
 });
+
+if (api.onNavKey) {
+  api.onNavKey((payload) => {
+    const key = payload?.key;
+    if (!key) return;
+    // Route globalShortcut-driven navigation through the same handler.
+    onKeyDown({
+      key,
+      target: document.activeElement,
+      preventDefault: () => {},
+    });
+  });
+}
 

@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("api", {
 
   paste: (text) => ipcRenderer.send("ui:paste", { text }),
   close: () => ipcRenderer.send("ui:close"),
+  openTemplatesEditor: (id) => ipcRenderer.send("ui:open-templates-editor", { id }),
 
   clipboardFlyoutSync: (payload) => ipcRenderer.send("clipboard-flyout:sync", payload),
   clipboardFlyoutHide: () => ipcRenderer.send("clipboard-flyout:hide"),
@@ -32,6 +33,7 @@ contextBridge.exposeInMainWorld("api", {
   templatesFlyoutPeerHoverSend: (inside) => ipcRenderer.send("templates-flyout:peer-hover", inside),
 
   onUiUpdate: (handler) => ipcRenderer.on("ui:update", (_evt, payload) => handler(payload)),
+  onNavKey: (handler) => ipcRenderer.on("ui:nav-key", (_evt, payload) => handler(payload)),
 
   onThemeChange: (handler) => ipcRenderer.on("theme:update", (_evt, payload) => handler(payload)),
 
