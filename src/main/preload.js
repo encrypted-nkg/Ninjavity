@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("api", {
 
   paste: (text) => ipcRenderer.send("ui:paste", { text }),
   close: () => ipcRenderer.send("ui:close"),
+  setPanelMode: (mode) => ipcRenderer.send("ui:set-panel-mode", { mode }),
   openTemplatesEditor: (id) => ipcRenderer.send("ui:open-templates-editor", { id }),
 
   clipboardFlyoutSync: (payload) => ipcRenderer.send("clipboard-flyout:sync", payload),

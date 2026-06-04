@@ -40,6 +40,7 @@ function render(payload) {
   const root = document.getElementById("templatesFlyoutItems");
   if (!root) return;
   root.innerHTML = "";
+  const pasteOnClick = payload?.pasteOnClick === true;
   const entries = payload?.entries || [];
   const selectedItemIndex = typeof payload?.selectedItemIndex === "number" ? payload.selectedItemIndex : -1;
 
@@ -62,9 +63,33 @@ function render(payload) {
         ? escapeHtml(String(entry.meta))
         : escapeHtml(formatTime(entry.copiedAt));
     div.innerHTML = `<div class="clip-flyout-text">${escapeHtml(entry.text)}</div><div class="meta">${meta}</div>`;
+    div.title = pasteOnClick ? "Click to paste · double-click to edit" : "Double-click to edit";
+    let clickTimer = null;
+    let suppressClickPaste = false;
     div.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      api.paste(entry.text);
+      if (!pasteOnClick) return;
+      if (clickTimer) clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => {
+        clickTimer = null;
+        if (!suppressClickPaste) api.paste(entry.text);
+        suppressClickPaste = false;
+      }, 250);
+    });
+    div.addEventListener("dblclick", (ev) => {
+      ev.stopPropagation();
+      suppressClickPaste = true;
+      if (clickTimer) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+      }
+      if (entry.id) {
+        try {
+          api.openTemplatesEditor(entry.id);
+        } catch (_) {
+          // ignore
+        }
+      }
     });
     root.appendChild(div);
   });

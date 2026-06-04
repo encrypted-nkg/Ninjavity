@@ -35,13 +35,13 @@
         <section id="templatesSection" class="section templates-section hidden">
           <div class="sectionHeader">
             <span>Preconfigured templates</span>
-            <span class="hint">↑↓ groups · → items · ← back · Enter paste</span>
+            <span class="hint">↑↓ groups · → items · Enter paste · double-click to edit</span>
           </div>
 
           <div class="templateModeRow">
             <div class="templateMode">
-              <button class="tab tabSmall" id="listModeBtn" type="button">List</button>
-              <button class="tab tabSmall active" id="configModeBtn" type="button">Configure</button>
+              <button class="tab tabSmall active" id="listModeBtn" type="button">List</button>
+              <button class="tab tabSmall" id="configModeBtn" type="button">Configure</button>
             </div>
           </div>
 
@@ -52,32 +52,42 @@
             </div>
           </div>
 
-          <div id="templatesConfigWrap" class="configWrap">
-            <div class="form">
+          <div id="templatesConfigWrap" class="configWrap templates-config-wrap hidden">
+            <form class="form templates-config-form" id="templatesConfigForm" onsubmit="return false">
               <div class="fieldRow">
-                <label>Group</label>
-                <input id="tmplGroup" class="input" type="text" maxlength="80" placeholder="General" />
+                <label for="tmplGroup">Group</label>
+                <input
+                  id="tmplGroup"
+                  class="input"
+                  type="text"
+                  maxlength="80"
+                  placeholder="General"
+                  list="tmplGroupDatalist"
+                  autocomplete="off"
+                />
+                <datalist id="tmplGroupDatalist"></datalist>
               </div>
               <div class="fieldRow">
-                <label>Name</label>
+                <label for="tmplName">Name</label>
                 <input id="tmplName" class="input" type="text" maxlength="80" placeholder="e.g. Email sign-off" />
               </div>
-              <div class="fieldRow">
-                <label>Text</label>
-                <textarea id="tmplText" class="textarea" maxlength="25000" placeholder="Type the template text..." rows="4"></textarea>
+              <div class="fieldRow fieldRow--text">
+                <label for="tmplText">Text</label>
+                <textarea
+                  id="tmplText"
+                  class="textarea templates-config-textarea"
+                  maxlength="25000"
+                  wrap="off"
+                  rows="14"
+                  placeholder="Type the template text…"
+                ></textarea>
+                <span class="templates-config-textarea-resize-hint">Drag the corner to resize</span>
               </div>
-              <div class="actions">
+              <div class="actions templates-config-actions">
                 <button class="btn" id="saveTemplateBtn" type="button">Save</button>
               </div>
               <div id="saveStatus" class="status" aria-live="polite"></div>
-            </div>
-
-            <div class="divider"></div>
-
-            <div class="configListHeader">
-              <span>Saved templates</span>
-            </div>
-            <ul id="templatesConfigList" class="list configList" role="listbox" aria-label="Saved templates"></ul>
+            </form>
           </div>
         </section>
 
@@ -121,12 +131,24 @@
           </div>
         </section>
 
-        <section id="todosTodaySection" class="section todos-today-section hidden" aria-label="Today's tasks">
+        <section id="todosTodaySection" class="section todos-today-section hidden" aria-label="Tasks by day">
           <div class="todos-today-hero">
             <div class="todos-today-hero-top">
-              <span class="todos-today-kicker">Today</span>
+              <span class="todos-today-kicker" id="todosTodayKicker">Today</span>
+              <button
+                type="button"
+                class="todos-today-jump-today hidden"
+                id="todosTodayJumpTodayBtn"
+                aria-label="Jump to today's tasks"
+              >
+                Back to today
+              </button>
             </div>
-            <div class="todos-today-date" id="todosTodayDateLabel"></div>
+            <div class="todos-today-date-nav">
+              <button type="button" class="todos-today-nav-btn" id="todosTodayPrevBtn" aria-label="Previous day">‹</button>
+              <div class="todos-today-date" id="todosTodayDateLabel"></div>
+              <button type="button" class="todos-today-nav-btn" id="todosTodayNextBtn" aria-label="Next day">›</button>
+            </div>
             <div class="todos-today-count" id="todosTodayCount" aria-live="polite"></div>
           </div>
           <div class="todos-today-scroll">
@@ -264,6 +286,43 @@
           </div>
         </section>
       </main>
+
+      <div id="snippetEditorOverlay" class="snippet-editor-overlay hidden" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="snippetEditorTitle">
+        <div class="snippet-editor-panel">
+          <header class="snippet-editor-header">
+            <h2 id="snippetEditorTitle" class="snippet-editor-title">Edit snippet</h2>
+            <button type="button" id="snippetEditorCloseBtn" class="snippet-editor-close" aria-label="Close editor">×</button>
+          </header>
+          <div class="snippet-editor-meta">
+            <div class="fieldRow">
+              <label for="snippetEditorGroup">Group</label>
+              <input id="snippetEditorGroup" class="input" type="text" maxlength="80" autocomplete="off" />
+            </div>
+            <div class="fieldRow">
+              <label for="snippetEditorName">Name</label>
+              <input id="snippetEditorName" class="input" type="text" maxlength="80" autocomplete="off" />
+            </div>
+          </div>
+          <label class="snippet-editor-text-label" for="snippetEditorText">Snippet text</label>
+          <textarea
+            id="snippetEditorText"
+            class="snippet-editor-textarea"
+            maxlength="25000"
+            spellcheck="true"
+            wrap="off"
+            placeholder="Full snippet content…"
+          ></textarea>
+          <div class="snippet-editor-footer">
+            <span id="snippetEditorCharCount" class="snippet-editor-chars" aria-live="polite"></span>
+            <div class="snippet-editor-actions">
+              <button type="button" class="btn secondary snippet-editor-delete" id="snippetEditorDeleteBtn">Delete</button>
+              <button type="button" class="btn secondary" id="snippetEditorCancelBtn">Cancel</button>
+              <button type="button" class="btn" id="snippetEditorSaveBtn">Save</button>
+            </div>
+          </div>
+          <div id="snippetEditorStatus" class="status snippet-editor-status" aria-live="polite"></div>
+        </div>
+      </div>
     </div>
 
     <script src="renderer.js"></script>

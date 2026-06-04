@@ -29,7 +29,18 @@ const tmplText = document.getElementById("tmplText");
 const saveTemplateBtn = document.getElementById("saveTemplateBtn");
 const saveStatus = document.getElementById("saveStatus");
 
-const templatesConfigList = document.getElementById("templatesConfigList");
+const tmplGroupDatalist = document.getElementById("tmplGroupDatalist");
+const snippetEditorOverlay = document.getElementById("snippetEditorOverlay");
+const snippetEditorTitle = document.getElementById("snippetEditorTitle");
+const snippetEditorGroup = document.getElementById("snippetEditorGroup");
+const snippetEditorName = document.getElementById("snippetEditorName");
+const snippetEditorText = document.getElementById("snippetEditorText");
+const snippetEditorCharCount = document.getElementById("snippetEditorCharCount");
+const snippetEditorSaveBtn = document.getElementById("snippetEditorSaveBtn");
+const snippetEditorCancelBtn = document.getElementById("snippetEditorCancelBtn");
+const snippetEditorDeleteBtn = document.getElementById("snippetEditorDeleteBtn");
+const snippetEditorCloseBtn = document.getElementById("snippetEditorCloseBtn");
+const snippetEditorStatus = document.getElementById("snippetEditorStatus");
 const settingsSection = document.getElementById("settingsSection");
 const infoSection = document.getElementById("infoSection");
 const infoScroll = document.getElementById("infoScroll");
@@ -53,9 +64,15 @@ const todoQuickDate = document.getElementById("todoQuickDate");
 const todosTodaySection = document.getElementById("todosTodaySection");
 const todosTodayList = document.getElementById("todosTodayList");
 const todosTodayDateLabel = document.getElementById("todosTodayDateLabel");
+const todosTodayKicker = document.getElementById("todosTodayKicker");
+const todosTodayJumpTodayBtn = document.getElementById("todosTodayJumpTodayBtn");
+const todosTodayPrevBtn = document.getElementById("todosTodayPrevBtn");
+const todosTodayNextBtn = document.getElementById("todosTodayNextBtn");
 const todosTodayCountEl = document.getElementById("todosTodayCount");
 const todosTodayQuickInput = document.getElementById("todosTodayQuickInput");
 const todosTodayAddBtn = document.getElementById("todosTodayAddBtn");
+/** YYYY-MM-DD shown in the ⌥⇧D peek panel (reset to today when the panel opens). */
+let todosTodayViewYmd = "";
 
 /** @type {Array<{ id: string, text: string, done: boolean, createdAt: number, targetDate: string }>} */
 let lastTodos = [];
@@ -96,6 +113,8 @@ let clipboardGroupRows = [];
 let lastClipboardSettings = { clipboardGroups: 10, clipboardPerGroup: 10 };
 let lastTemplatesGrouped = [];
 let lastTemplatesAll = [];
+/** In-flight templates fetch so list/configure do not race on first open. */
+let templatesLoadPromise = null;
 /** @type {{ name: string, items: Array<{ id?: string, name?: string, text?: string, group?: string }> }[]} */
 let templateGroupRows = [];
 
@@ -106,6 +125,8 @@ let editingTemplateId = null;
 let clipboardCompact = false;
 /** Cmd+Shift+B slim mode (SavedClip): group list + separate items window */
 let templatesCompact = false;
+/** True only for global-shortcut overlay: click snippet to paste. Tray/settings UI must not paste on click. */
+let templatesPasteOnClick = false;
 /** Hover target row index, or null */
 let clipboardHoverIndex = null;
 /** After first ArrowUp/ArrowDown in clipboard, show flyout for selection */
@@ -198,10 +219,7 @@ function fillTemplatesFlyoutContent(group, selectedItemIndex = -1) {
     if (i === selectedItemIndex) div.classList.add("selected");
     const meta = [entry.name || "Untitled", entry.group || group.name].filter(Boolean).join(" · ");
     div.innerHTML = `<div class="clip-flyout-text">${escapeHtml(entry.text || "")}</div><div class="meta">${escapeHtml(meta)}</div>`;
-    div.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      api.paste(entry.text || "");
-    });
+    wireTemplateSnippetItem(div, entry);
     templatesFlyout.appendChild(div);
   });
   requestAnimationFrame(() => {
@@ -244,7 +262,9 @@ function syncTemplatesFlyout() {
     try {
       api.templatesFlyoutSync({
         show: true,
+        pasteOnClick: templatesPasteOnClick,
         entries: (group.items || []).map((item) => ({
+          id: item.id || null,
           text: item.text || "",
           meta: [item.name || "Untitled", item.group || group.name].filter(Boolean).join(" · "),
         })),
@@ -335,6 +355,127 @@ function clearStatus() {
 
 function setStatus(msg) {
   saveStatus.textContent = msg;
+}
+
+function isSnippetEditorOpen() {
+  return snippetEditorOverlay && !snippetEditorOverlay.classList.contains("hidden");
+}
+
+function setSnippetEditorStatus(msg) {
+  if (snippetEditorStatus) snippetEditorStatus.textContent = msg || "";
+}
+
+function updateSnippetEditorCharCount() {
+  if (!snippetEditorCharCount || !snippetEditorText) return;
+  const n = snippetEditorText.value.length;
+  const max = snippetEditorText.maxLength || 25000;
+  snippetEditorCharCount.textContent = `${n.toLocaleString()} / ${max.toLocaleString()} characters`;
+}
+
+function openSnippetEditor(template) {
+  if (!template?.id || !snippetEditorOverlay) return;
+  editingTemplateId = template.id;
+  if (snippetEditorGroup) snippetEditorGroup.value = template.group || "";
+  if (snippetEditorName) snippetEditorName.value = template.name || "";
+  if (snippetEditorText) snippetEditorText.value = template.text || "";
+  if (snippetEditorTitle) {
+    snippetEditorTitle.textContent = template.name ? `Edit — ${template.name}` : "Edit snippet";
+  }
+  setSnippetEditorStatus("");
+  updateSnippetEditorCharCount();
+  snippetEditorOverlay.classList.remove("hidden");
+  snippetEditorOverlay.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => {
+    try {
+      snippetEditorText?.focus?.();
+      const len = snippetEditorText?.value?.length || 0;
+      snippetEditorText?.setSelectionRange?.(len, len);
+    } catch (_) {
+      // ignore
+    }
+  });
+}
+
+function closeSnippetEditor() {
+  if (!snippetEditorOverlay) return;
+  snippetEditorOverlay.classList.add("hidden");
+  snippetEditorOverlay.setAttribute("aria-hidden", "true");
+  setSnippetEditorStatus("");
+  editingTemplateId = null;
+}
+
+function openSnippetEditorById(id) {
+  if (!id) return;
+  const local = (lastTemplatesAll || []).find((x) => x && x.id === id);
+  if (local) {
+    openSnippetEditor(local);
+    return;
+  }
+  api.getTemplatesAll().then((all) => {
+    lastTemplatesAll = all || [];
+    const t = lastTemplatesAll.find((x) => x && x.id === id);
+    if (t) openSnippetEditor(t);
+  });
+}
+
+async function refreshTemplatesAfterEdit() {
+  const all = await api.getTemplatesAll();
+  lastTemplatesAll = all;
+  const grouped = groupTemplatesForLocal(all);
+  lastTemplatesGrouped = grouped;
+  renderTemplatesConfigList(all);
+  if (uiMode === "templates" && templateView === "list") {
+    renderTemplatesList(grouped);
+  }
+}
+
+async function saveSnippetEditor() {
+  if (!editingTemplateId) return;
+  const id = editingTemplateId;
+  const group = snippetEditorGroup?.value ?? "";
+  const name = snippetEditorName?.value ?? "";
+  const text = snippetEditorText?.value ?? "";
+  snippetEditorSaveBtn.disabled = true;
+  snippetEditorSaveBtn.textContent = "Saving…";
+  try {
+    const res = await api.saveTemplate({ id, group, name, text });
+    if (!res?.ok) {
+      setSnippetEditorStatus(res?.error || "Failed to save.");
+      return;
+    }
+    await refreshTemplatesAfterEdit();
+    closeSnippetEditor();
+  } finally {
+    snippetEditorSaveBtn.disabled = false;
+    snippetEditorSaveBtn.textContent = "Save";
+  }
+}
+
+function wireTemplateSnippetItem(div, entry) {
+  let clickTimer = null;
+  let suppressClickPaste = false;
+  const text = entry.text || "";
+  const id = entry.id || null;
+  div.title = templatesPasteOnClick ? "Click to paste · double-click to edit" : "Double-click to edit";
+  div.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (!templatesPasteOnClick) return;
+    if (clickTimer) clearTimeout(clickTimer);
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
+      if (!suppressClickPaste) api.paste(text);
+      suppressClickPaste = false;
+    }, 250);
+  });
+  div.addEventListener("dblclick", (ev) => {
+    ev.stopPropagation();
+    suppressClickPaste = true;
+    if (clickTimer) {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+    }
+    if (id) openSnippetEditorById(id);
+  });
 }
 
 function setSettingsStatus(msg) {
@@ -544,55 +685,18 @@ function renderTemplatesList(grouped) {
   reportTemplatesCompactMainHeightIfNeeded();
 }
 
-function renderTemplatesConfigList(allTemplates) {
-  templatesConfigList.innerHTML = "";
-  const templates = allTemplates || [];
-
-  if (!templates.length) {
-    const li = document.createElement("li");
-    li.className = "item";
-    li.innerHTML = `<div class="itemText">No templates yet.</div><div class="itemMeta">Add one using the form above.</div>`;
-    templatesConfigList.appendChild(li);
-    return;
+function syncTemplateGroupDatalist() {
+  if (!tmplGroupDatalist) return;
+  const groups = new Set();
+  for (const t of lastTemplatesAll || []) {
+    groups.add((t.group || "").trim() || "General");
   }
-
-  templates.forEach((t) => {
-    const li = document.createElement("li");
-    li.className = "item";
-    li.dataset.id = t.id;
-
-    const preview = (t.text || "").replace(/\s+/g, " ").slice(0, 70);
-    li.innerHTML = `
-      <div class="itemText">${escapeHtml(t.name)}</div>
-      <div class="itemMeta">${escapeHtml(t.group || "General")} · ${escapeHtml(preview)}${preview.length >= 70 ? "…" : ""}</div>
-    `;
-
-    li.addEventListener("click", () => {
-      editingTemplateId = t.id;
-      tmplGroup.value = t.group || "";
-      tmplName.value = t.name || "";
-      tmplText.value = t.text || "";
-      clearStatus();
-    });
-
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "btn secondary";
-    del.textContent = "Delete";
-    del.style.flex = "0";
-    del.style.marginTop = "8px";
-    del.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      api.deleteTemplate(t.id).then(() => {
-        // Refresh by re-rendering list via existing update payload.
-        return refreshTemplatesConfig();
-      });
-    });
-
-    // Small UI hack: append delete button in the meta area by adding it after li.innerHTML.
-    li.appendChild(del);
-    templatesConfigList.appendChild(li);
-  });
+  tmplGroupDatalist.innerHTML = "";
+  for (const g of [...groups].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))) {
+    const opt = document.createElement("option");
+    opt.value = g;
+    tmplGroupDatalist.appendChild(opt);
+  }
 }
 
 function refreshTemplatesConfig() {
@@ -600,11 +704,43 @@ function refreshTemplatesConfig() {
     lastTemplatesAll = all;
     const grouped = groupTemplatesForLocal(all);
     lastTemplatesGrouped = grouped;
-    renderTemplatesConfigList(all);
+    syncTemplateGroupDatalist();
     if (uiMode === "templates" && templateView === "list") {
       renderTemplatesList(grouped);
     }
   });
+}
+
+function applyTemplatesPayload(payload) {
+  const all = payload?.templatesAll;
+  if (Array.isArray(all) && all.length) {
+    lastTemplatesAll = all;
+    const grouped = payload?.templatesGrouped;
+    lastTemplatesGrouped =
+      Array.isArray(grouped) && grouped.length ? grouped : groupTemplatesForLocal(all);
+  }
+}
+
+function ensureTemplatesLoaded() {
+  if (lastTemplatesAll?.length) {
+    const grouped = lastTemplatesGrouped?.length
+      ? lastTemplatesGrouped
+      : groupTemplatesForLocal(lastTemplatesAll);
+    lastTemplatesGrouped = grouped;
+    return Promise.resolve({ all: lastTemplatesAll, grouped });
+  }
+  if (templatesLoadPromise) return templatesLoadPromise;
+  templatesLoadPromise = api
+    .getTemplatesAll()
+    .then((all) => {
+      lastTemplatesAll = all || [];
+      lastTemplatesGrouped = groupTemplatesForLocal(lastTemplatesAll);
+      return { all: lastTemplatesAll, grouped: lastTemplatesGrouped };
+    })
+    .finally(() => {
+      templatesLoadPromise = null;
+    });
+  return templatesLoadPromise;
 }
 
 function focusPanelKeyboardTarget() {
@@ -649,28 +785,50 @@ function focusPanelKeyboardTarget() {
 
 function setTemplateView(next) {
   templateView = next;
-  if (next === "list") {
-    listModeBtn.classList.add("active");
-    configModeBtn.classList.remove("active");
-    templatesListWrap.classList.remove("hidden");
-    templatesConfigWrap.classList.add("hidden");
-    if (uiMode === "templates") {
-      const grouped =
-        lastTemplatesGrouped && lastTemplatesGrouped.length
+  const applyView = () => {
+    if (next === "list") {
+      listModeBtn.classList.add("active");
+      configModeBtn.classList.remove("active");
+      templatesListWrap.classList.remove("hidden");
+      templatesConfigWrap.classList.add("hidden");
+      templatesSection?.classList.remove("templates-view-config");
+      templatesSection?.classList.add("templates-view-list");
+      if (uiMode === "templates") {
+        const grouped = lastTemplatesGrouped?.length
           ? lastTemplatesGrouped
           : groupTemplatesForLocal(lastTemplatesAll || []);
-      lastTemplatesGrouped = grouped;
-      renderTemplatesList(grouped);
+        lastTemplatesGrouped = grouped;
+        renderTemplatesList(grouped);
+      }
+    } else {
+      listModeBtn.classList.remove("active");
+      configModeBtn.classList.add("active");
+      templatesListWrap.classList.add("hidden");
+      templatesConfigWrap.classList.remove("hidden");
+      templatesSection?.classList.add("templates-view-config");
+      templatesSection?.classList.remove("templates-view-list");
+      hideTemplatesFlyout();
+      syncTemplateGroupDatalist();
+      requestAnimationFrame(() => {
+        try {
+          tmplText?.focus?.();
+        } catch (_) {
+          // ignore
+        }
+      });
     }
+    if (next === "list" && uiMode === "templates") {
+      focusPanelKeyboardTarget();
+    }
+  };
+
+  if (uiMode === "templates") {
+    ensureTemplatesLoaded().then(() => {
+      if (uiMode !== "templates" || templateView !== next) return;
+      applyView();
+    });
   } else {
-    listModeBtn.classList.remove("active");
-    configModeBtn.classList.add("active");
-    templatesListWrap.classList.add("hidden");
-    templatesConfigWrap.classList.remove("hidden");
-    hideTemplatesFlyout();
-  }
-  if (next === "list" && uiMode === "templates") {
-    focusPanelKeyboardTarget();
+    applyView();
   }
 }
 
@@ -736,30 +894,75 @@ function sortTodosForDisplay(todos) {
   });
 }
 
-function sortTodosTodayForPeek(todos) {
-  const list = filterTodosForChip(todos, "today");
+function ymdToLocalDate(ymd) {
+  const [y, m, d] = String(ymd || "")
+    .split("-")
+    .map(Number);
+  if (!y || !m || !d) return new Date();
+  return new Date(y, m - 1, d);
+}
+
+function filterTodosForYmd(todos, ymd) {
+  const day = ymd || todayYmd();
+  return (todos || []).filter((t) => (t.targetDate || todayYmd()) === day);
+}
+
+function sortTodosTodayForDate(todos, ymd) {
+  const list = filterTodosForYmd(todos, ymd);
   return list.sort((a, b) => {
     if (a.done !== b.done) return a.done ? 1 : -1;
     return (b.createdAt || 0) - (a.createdAt || 0);
   });
 }
 
+function isTodosTodayViewingToday() {
+  return todosTodayViewYmd === todayYmd();
+}
+
+function shiftTodosTodayView(deltaDays) {
+  todosTodayViewYmd = addDaysYmd(todosTodayViewYmd || todayYmd(), deltaDays);
+  renderTodosTodayList();
+}
+
+function jumpTodosTodayToToday() {
+  todosTodayViewYmd = todayYmd();
+  renderTodosTodayList();
+}
+
 function renderTodosTodayList() {
   if (!todosTodayList) return;
-  const visible = sortTodosTodayForPeek(lastTodosFull);
+  if (!todosTodayViewYmd) todosTodayViewYmd = todayYmd();
+  const viewYmd = todosTodayViewYmd;
+  const viewingToday = viewYmd === todayYmd();
+  const visible = sortTodosTodayForDate(lastTodosFull, viewYmd);
+  if (todosTodayKicker) {
+    todosTodayKicker.textContent = viewingToday ? "Today" : "Tasks";
+  }
+  if (todosTodayJumpTodayBtn) {
+    todosTodayJumpTodayBtn.classList.toggle("hidden", viewingToday);
+  }
   if (todosTodayDateLabel) {
-    todosTodayDateLabel.textContent = new Date().toLocaleDateString(undefined, {
+    todosTodayDateLabel.textContent = ymdToLocalDate(viewYmd).toLocaleDateString(undefined, {
       weekday: "long",
       month: "long",
       day: "numeric",
     });
   }
+  if (todosTodayQuickInput) {
+    todosTodayQuickInput.placeholder = viewingToday
+      ? "Add a task for today…"
+      : `Add a task for ${ymdToLocalDate(viewYmd).toLocaleDateString(undefined, { month: "short", day: "numeric" })}…`;
+  }
   const n = visible.length;
   const undone = visible.filter((t) => !t.done).length;
   if (todosTodayCountEl) {
-    if (n === 0) todosTodayCountEl.textContent = "No tasks today";
-    else if (undone === 0) todosTodayCountEl.textContent = "All done — nice work";
-    else todosTodayCountEl.textContent = `${undone} task${undone === 1 ? "" : "s"} left`;
+    if (n === 0) {
+      todosTodayCountEl.textContent = viewingToday ? "No tasks today" : "No tasks on this day";
+    } else if (undone === 0) {
+      todosTodayCountEl.textContent = "All done — nice work";
+    } else {
+      todosTodayCountEl.textContent = `${undone} task${undone === 1 ? "" : "s"} left`;
+    }
   }
   todosTodayList.innerHTML = "";
   if (!visible.length) {
@@ -767,7 +970,7 @@ function renderTodosTodayList() {
     li.className = "todos-today-empty";
     li.innerHTML = `<div class="todos-today-empty-inner">
       <div class="todos-today-empty-ring" aria-hidden="true"></div>
-      <p class="todos-today-empty-title">Your day is clear</p>
+      <p class="todos-today-empty-title">${viewingToday ? "Your day is clear" : "Nothing scheduled"}</p>
       <p class="todos-today-empty-sub">Add something below or with ⌘⇧D</p>
     </div>`;
     todosTodayList.appendChild(li);
@@ -919,7 +1122,8 @@ async function submitTodosTodayQuick() {
   if (!todosTodayQuickInput) return;
   const text = todosTodayQuickInput.value.trim();
   if (!text) return;
-  const res = await api.addTodo(text, todayYmd());
+  const target = todosTodayViewYmd || todayYmd();
+  const res = await api.addTodo(text, target);
   if (res?.ok && res.todos) {
     todosTodayQuickInput.value = "";
     renderTodosList(res.todos);
@@ -928,6 +1132,11 @@ async function submitTodosTodayQuick() {
 
 function showMode(mode, payload) {
   uiMode = mode;
+  try {
+    api.setPanelMode?.(mode);
+  } catch (_) {
+    // ignore
+  }
   selectedIndex = -1;
   if (mode !== "clipboard") {
     try {
@@ -1048,6 +1257,7 @@ function showMode(mode, payload) {
       rootEl.classList.add("todo-today-peek");
     }
     if (payload?.settings) applyThemeFromSettings(payload.settings);
+    todosTodayViewYmd = todayYmd();
     renderTodosList(payload?.todos || []);
     if (todosTodayQuickInput) todosTodayQuickInput.value = "";
     focusPanelKeyboardTarget();
@@ -1069,6 +1279,7 @@ function showMode(mode, payload) {
     tabSettings.classList.remove("active");
 
     templatesCompact = !!payload?.compact;
+    templatesPasteOnClick = payload?.pasteOnClick === true;
     clipboardCompact = false;
     if (rootEl) {
       rootEl.classList.toggle("compact-overlay", templatesCompact);
@@ -1093,32 +1304,17 @@ function showMode(mode, payload) {
     settingsSection.style.display = "none";
 
     modeTitle.textContent = "Templates";
-    lastTemplatesGrouped = payload?.templatesGrouped || [];
-    lastTemplatesAll = payload?.templatesAll || [];
+    applyTemplatesPayload(payload);
     if (payload?.settings) applyThemeFromSettings(payload.settings);
     const editId = payload?.editTemplateId || null;
-    if (editId) {
-      setTemplateView("configure");
-      const t = (lastTemplatesAll || []).find((x) => x && x.id === editId);
-      if (t) {
-        editingTemplateId = t.id;
-        if (tmplGroup) tmplGroup.value = t.group || "";
-        if (tmplName) tmplName.value = t.name || "";
-        if (tmplText) tmplText.value = t.text || "";
-        clearStatus();
-        requestAnimationFrame(() => {
-          try {
-            tmplText?.focus?.();
-          } catch (_) {
-            // ignore
-          }
-        });
-      }
-    } else {
+    ensureTemplatesLoaded().then(() => {
+      if (uiMode !== "templates") return;
       setTemplateView("list");
-    }
-    renderTemplatesConfigList(lastTemplatesAll);
-    focusPanelKeyboardTarget();
+      syncTemplateGroupDatalist();
+      if (editId) {
+        requestAnimationFrame(() => openSnippetEditorById(editId));
+      }
+    });
     return;
   }
 
@@ -1272,7 +1468,20 @@ function onKeyDown(ev) {
     }
   }
 
+  if (uiMode === "todosToday" && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+    const t = ev.target;
+    if (t === todosTodayQuickInput || t === todosTodayAddBtn) return;
+    ev.preventDefault();
+    shiftTodosTodayView(ev.key === "ArrowLeft" ? -1 : 1);
+    return;
+  }
+
   if (ev.key === "Escape") {
+    if (isSnippetEditorOpen()) {
+      ev.preventDefault();
+      closeSnippetEditor();
+      return;
+    }
     if (uiMode === "todoQuickAdd") {
       ev.preventDefault();
       api.close();
@@ -1295,6 +1504,9 @@ function onKeyDown(ev) {
       templateNavPane = "groups";
       templateItemIndex = 0;
       syncTemplatesFlyout();
+      return;
+    }
+    if (uiMode === "settings") {
       return;
     }
     hideClipboardFlyout();
@@ -1408,18 +1620,21 @@ function wireUI() {
   closeBtn.addEventListener("click", () => api.close());
 
   tabClipboard.addEventListener("click", () => {
+    closeSnippetEditor();
     Promise.all([api.getClipboardHistory(), api.getSettings()]).then(([hist, settings]) => {
       showMode("clipboard", { clipboardHistory: hist, settings, compact: false });
     });
   });
 
   tabTemplates.addEventListener("click", () => {
-    api.getSettings().then((settings) => {
+    Promise.all([api.getTemplatesAll(), api.getSettings()]).then(([all, settings]) => {
+      const grouped = groupTemplatesForLocal(all || []);
       showMode("templates", {
-        templatesGrouped: lastTemplatesGrouped,
-        templatesAll: lastTemplatesAll,
+        templatesGrouped: grouped,
+        templatesAll: all || [],
         settings,
         compact: false,
+        pasteOnClick: false,
       });
     });
   });
@@ -1439,6 +1654,45 @@ function wireUI() {
   listModeBtn.addEventListener("click", () => setTemplateView("list"));
   configModeBtn.addEventListener("click", () => setTemplateView("configure"));
 
+  if (snippetEditorText) {
+    snippetEditorText.addEventListener("input", updateSnippetEditorCharCount);
+    snippetEditorText.addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === "s") {
+        ev.preventDefault();
+        saveSnippetEditor();
+      }
+    });
+  }
+  if (snippetEditorSaveBtn) {
+    snippetEditorSaveBtn.addEventListener("click", () => saveSnippetEditor());
+  }
+  if (snippetEditorCancelBtn) {
+    snippetEditorCancelBtn.addEventListener("click", () => closeSnippetEditor());
+  }
+  if (snippetEditorCloseBtn) {
+    snippetEditorCloseBtn.addEventListener("click", () => closeSnippetEditor());
+  }
+  if (snippetEditorDeleteBtn) {
+    snippetEditorDeleteBtn.addEventListener("click", async () => {
+      if (!editingTemplateId) return;
+      if (!window.confirm("Delete this snippet?")) return;
+      snippetEditorDeleteBtn.disabled = true;
+      try {
+        await api.deleteTemplate(editingTemplateId);
+        editingTemplateId = null;
+        await refreshTemplatesAfterEdit();
+        closeSnippetEditor();
+      } finally {
+        snippetEditorDeleteBtn.disabled = false;
+      }
+    });
+  }
+  if (snippetEditorOverlay) {
+    snippetEditorOverlay.addEventListener("click", (ev) => {
+      if (ev.target === snippetEditorOverlay) closeSnippetEditor();
+    });
+  }
+
   saveTemplateBtn.addEventListener("click", async () => {
     clearStatus();
     saveTemplateBtn.disabled = true;
@@ -1447,15 +1701,15 @@ function wireUI() {
       const group = tmplGroup.value;
       const name = tmplName.value;
       const text = tmplText.value;
-      const res = await api.saveTemplate({ group, name, text });
+      const res = await api.saveTemplate({ id: editingTemplateId, group, name, text });
       if (!res?.ok) {
         setStatus(res?.error || "Failed to save template.");
         return;
       }
       setStatus("Saved.");
       const all = await api.getTemplatesAll();
-      renderTemplatesConfigList(all);
       lastTemplatesAll = all;
+      syncTemplateGroupDatalist();
       // If currently in list view, refresh the list for immediate feedback.
       if (uiMode === "templates" && templateView === "list") {
         const grouped = groupTemplatesForLocal(all);
@@ -1570,6 +1824,16 @@ function wireUI() {
 
   if (todosTodayAddBtn) todosTodayAddBtn.addEventListener("click", () => submitTodosTodayQuick());
 
+  if (todosTodayPrevBtn) {
+    todosTodayPrevBtn.addEventListener("click", () => shiftTodosTodayView(-1));
+  }
+  if (todosTodayNextBtn) {
+    todosTodayNextBtn.addEventListener("click", () => shiftTodosTodayView(1));
+  }
+  if (todosTodayJumpTodayBtn) {
+    todosTodayJumpTodayBtn.addEventListener("click", () => jumpTodosTodayToToday());
+  }
+
   if (themeSelect) {
     themeSelect.addEventListener("change", async () => {
       try {
@@ -1636,6 +1900,12 @@ function groupTemplatesForLocal(allTemplates) {
 wireUI();
 loadStartupToggle();
 
+api.getTemplatesAll().then((all) => {
+  lastTemplatesAll = all || [];
+  lastTemplatesGrouped = groupTemplatesForLocal(lastTemplatesAll);
+  syncTemplateGroupDatalist();
+});
+
 api.getSettings().then((s) => {
   if (themeSelect) themeSelect.value = s.theme || "system";
   applyThemeFromSettings(s);
@@ -1653,6 +1923,8 @@ if (api.onNavKey) {
   api.onNavKey((payload) => {
     const key = payload?.key;
     if (!key) return;
+    if (isSnippetEditorOpen()) return;
+    if (uiMode !== "clipboard" && !(uiMode === "templates" && templateView === "list")) return;
     // Route globalShortcut-driven navigation through the same handler.
     onKeyDown({
       key,

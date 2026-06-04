@@ -82,18 +82,45 @@ const PANEL_BLUR_DISMISS_MS = 140;
 /** When true, we route keyboard nav via temporary globalShortcuts (no app activation). */
 let overlayNavEnabled = false;
 let overlayNavRegistered = false;
+let overlayNavEnabledAt = 0;
+
+const OVERLAY_NAV_ACCELS = ["Up", "Down", "Left", "Right", "Escape", "Enter", "Return", "E"];
 
 function sendOverlayNavKey(key) {
-  if (!panelWindow || panelWindow.isDestroyed()) return;
+  if (!overlayNavEnabled || !overlayNavRegistered) return;
+  if (!panelWindow || panelWindow.isDestroyed() || !panelWindow.isVisible()) {
+    disableOverlayNavShortcuts();
+    return;
+  }
+  if (currentMode !== "clipboard" && currentMode !== "templates") return;
+  const k = String(key || "");
+  // Ignore Enter briefly after registering so a queued/repeated key cannot paste into the front app.
+  if (k === "Enter" && Date.now() - overlayNavEnabledAt < 280) return;
   try {
-    panelWindow.webContents.send("ui:nav-key", { key: String(key || "") });
+    panelWindow.webContents.send("ui:nav-key", { key: k });
   } catch (_) {
     // ignore
   }
 }
 
+function unregisterOverlayNavShortcuts() {
+  for (const a of OVERLAY_NAV_ACCELS) {
+    try {
+      globalShortcut.unregister(a);
+    } catch (_) {
+      // ignore
+    }
+  }
+  overlayNavRegistered = false;
+}
+
+function disableOverlayNavShortcuts() {
+  overlayNavEnabled = false;
+  unregisterOverlayNavShortcuts();
+}
+
 function enableOverlayNavShortcuts() {
-  if (overlayNavRegistered) return;
+  unregisterOverlayNavShortcuts();
   if (!overlayNavEnabled) return;
   // Register only while our overlay is visible; avoid stealing focus by keeping ClipNinja inactive.
   // These shortcuts override arrow keys globally, so keep the scope as narrow as possible.
@@ -117,19 +144,7 @@ function enableOverlayNavShortcuts() {
     }
   }
   overlayNavRegistered = okAny;
-}
-
-function disableOverlayNavShortcuts() {
-  if (!overlayNavRegistered) return;
-  const accels = ["Up", "Down", "Left", "Right", "Escape", "Enter", "Return", "E"];
-  for (const a of accels) {
-    try {
-      globalShortcut.unregister(a);
-    } catch (_) {
-      // ignore
-    }
-  }
-  overlayNavRegistered = false;
+  if (okAny) overlayNavEnabledAt = Date.now();
 }
 let currentMode = "clipboard"; // 'clipboard' | 'templates' | 'todos' | 'settings' | 'todoQuickAdd' | 'todosToday'
 let uiUpdatePending = null;
@@ -150,6 +165,8 @@ let warnedAutomationPermission = false;
 let warnedAutomationNotification = false;
 
 let tray = null;
+/** Cached menu-bar icon source (before badge overlay). */
+let trayIconBase = null;
 
 function warnAutomationOnce(detail) {
   if (warnedAutomationPermission) return;
@@ -396,9 +413,140 @@ function sanitizeForMenuLabel(s) {
   return oneLine.length > 60 ? `${oneLine.slice(0, 57)}...` : oneLine;
 }
 
+function loadTrayIconBase() {
+  if (trayIconBase && !trayIconBase.isEmpty()) return trayIconBase;
+
+  const pngPath = ensurePngIconExists();
+  let icon = nativeImage.createFromPath(pngPath);
+
+  if (!icon || icon.isEmpty()) {
+    const svgPath = path.join(__dirname, "..", "..", "assets", "icon.svg");
+    const svgText = fs.readFileSync(svgPath, "utf8");
+    icon = createNativeImageFromSvg(svgText);
+  }
+
+  if (!icon || icon.isEmpty()) return null;
+  trayIconBase = icon;
+  return trayIconBase;
+}
+
+const TRAY_ICON_LOGICAL_PX = 22;
+/** Menu-bar icon scale (1 = full; 0.8 = 80% of current rendered size). */
+const TRAY_ICON_MENU_SCALE = 0.8;
+/** Badge dot scale relative to the previous dot size. */
+const TRAY_BADGE_DOT_SCALE = 0.5;
+
+function getTrayDisplayScaleFactor() {
+  return screen.getPrimaryDisplay().scaleFactor || 1;
+}
+
+function getTrayIconPixelSize() {
+  const scaled = TRAY_ICON_LOGICAL_PX * TRAY_ICON_MENU_SCALE;
+  return Math.max(Math.round(scaled), Math.round(scaled * getTrayDisplayScaleFactor()));
+}
+
+function setBitmapPixel(buffer, width, height, x, y, r, g, b, a) {
+  if (x < 0 || y < 0 || x >= width || y >= height) return;
+  const i = (y * width + x) * 4;
+  buffer[i] = b;
+  buffer[i + 1] = g;
+  buffer[i + 2] = r;
+  buffer[i + 3] = a;
+}
+
+function paintDotOnBitmap(buffer, width, height, cx, cy, radius, rgb) {
+  const [r, g, b] = rgb;
+  const r2 = radius * radius;
+  const ring = Math.max(0.6, radius * 0.35);
+  const outerR = radius + ring;
+  const y0 = Math.max(0, Math.floor(cy - outerR));
+  const y1 = Math.min(height - 1, Math.ceil(cy + outerR));
+  const x0 = Math.max(0, Math.floor(cx - outerR));
+  const x1 = Math.min(width - 1, Math.ceil(cx + outerR));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cx + 0.5;
+      const dy = y - cy + 0.5;
+      const dist2 = dx * dx + dy * dy;
+      if (dist2 <= outerR * outerR) {
+        if (dist2 <= r2) {
+          setBitmapPixel(buffer, width, height, x, y, r, g, b, 255);
+        } else {
+          setBitmapPixel(buffer, width, height, x, y, 255, 255, 255, 220);
+        }
+      }
+    }
+  }
+}
+
+function getTodoTrayBadgeState() {
+  const today = todayLocalYmd();
+  let hasTodayRemaining = false;
+  let hasPastRemaining = false;
+  for (const t of getTodos()) {
+    if (t.done) continue;
+    const d = t.targetDate || today;
+    if (d === today) hasTodayRemaining = true;
+    else if (d < today) hasPastRemaining = true;
+  }
+  return { hasTodayRemaining, hasPastRemaining };
+}
+
+function trayImageFromBitmapBuffer(buf, width, height) {
+  // scaleFactor 1: use full pixel buffer in the menu bar (matches pre-badge icon size on Retina).
+  return nativeImage.createFromBitmap(buf, { width, height, scaleFactor: 1 });
+}
+
+function buildTrayImageWithBadges(hasTodayRemaining, hasPastRemaining) {
+  const base = loadTrayIconBase();
+  if (!base) return null;
+
+  const size = getTrayIconPixelSize();
+  const img = base.resize({ width: size, height: size });
+  const { width, height } = img.getSize();
+  const buf = Buffer.from(img.toBitmap());
+  if (buf.length < width * height * 4) {
+    return trayImageFromBitmapBuffer(buf, width, height);
+  }
+
+  if (hasPastRemaining || hasTodayRemaining) {
+    const dotR = Math.max(2, Math.round(size * 0.065 * TRAY_BADGE_DOT_SCALE));
+    // Sit on the artwork corners (icon PNG has transparent top/side padding in the tray bitmap).
+    const dotCy = Math.min(height - dotR - 1, Math.round(height * 0.2) + dotR);
+    const dotCxLeft = dotR;
+    const dotCxRight = width - dotR;
+
+    if (hasPastRemaining) {
+      paintDotOnBitmap(buf, width, height, dotCxLeft, dotCy, dotR, [0, 122, 255]);
+    }
+    if (hasTodayRemaining) {
+      paintDotOnBitmap(buf, width, height, dotCxRight, dotCy, dotR, [48, 209, 88]);
+    }
+  }
+
+  return trayImageFromBitmapBuffer(buf, width, height);
+}
+
+function refreshTrayIcon() {
+  if (!tray) return;
+  try {
+    const { hasTodayRemaining, hasPastRemaining } = getTodoTrayBadgeState();
+    const icon = buildTrayImageWithBadges(hasTodayRemaining, hasPastRemaining);
+    if (icon && !icon.isEmpty()) tray.setImage(icon);
+
+    let tip = APP_NAME;
+    if (hasTodayRemaining) tip += " — tasks due today";
+    else if (hasPastRemaining) tip += " — overdue tasks";
+    tray.setToolTip(tip);
+  } catch (e) {
+    console.error("Failed to update tray icon badges:", e);
+  }
+}
+
 function refreshTrayMenuIfReady() {
   if (!tray) return;
   try {
+    refreshTrayIcon();
     tray.setContextMenu(buildTrayMenu());
   } catch (e) {
     console.error("Failed to refresh tray menu:", e);
@@ -779,6 +927,7 @@ function getTodos() {
 
 function setTodos(todos) {
   store.set("todos", Array.isArray(todos) ? todos.slice(0, MAX_TODOS) : []);
+  refreshTrayMenuIfReady();
 }
 
 function groupTemplates(templates) {
@@ -853,6 +1002,10 @@ function createPanelWindow() {
     onPanelOrFlyoutBlur();
   });
 
+  panelWindow.on("hide", () => {
+    disableOverlayNavShortcuts();
+  });
+
   return panelWindow;
 }
 
@@ -894,7 +1047,19 @@ function cancelPendingPanelBlurDismiss() {
   }
 }
 
+/** Settings (tray → Settings) stays open until the user closes it or switches mode. */
+function isSettingsPanelSticky() {
+  return (
+    currentMode === "settings" &&
+    panelWindow &&
+    !panelWindow.isDestroyed() &&
+    panelWindow.isVisible()
+  );
+}
+
 function hidePanelAndFlyoutsIfNoFocus() {
+  if (isSettingsPanelSticky()) return;
+
   const focused = BrowserWindow.getFocusedWindow();
   if (isOurPanelOrFlyoutWindow(focused)) return;
   if (panelWindow && !panelWindow.isDestroyed() && panelWindow.isFocused()) return;
@@ -924,6 +1089,7 @@ function hidePanelAndFlyoutsIfNoFocus() {
 }
 
 function scheduleHidePanelIfLostFocus() {
+  if (isSettingsPanelSticky()) return;
   cancelPendingPanelBlurDismiss();
   hidePanelBlurTimer = setTimeout(() => {
     hidePanelBlurTimer = null;
@@ -932,6 +1098,7 @@ function scheduleHidePanelIfLostFocus() {
 }
 
 function onPanelOrFlyoutBlur() {
+  if (isSettingsPanelSticky()) return;
   scheduleHidePanelIfLostFocus();
 }
 
@@ -948,6 +1115,7 @@ function setupPanelBlurDismiss() {
         !templatesFlyoutWindow.isDestroyed() &&
         templatesFlyoutWindow.isVisible());
     if (!anyOursVisible) return;
+    if (isSettingsPanelSticky()) return;
     scheduleHidePanelIfLostFocus();
   });
   app.on("browser-window-focus", (_event, win) => {
@@ -1144,6 +1312,7 @@ function positionPanelWindow(opts = {}) {
 
 function ensurePanelVisible(mode, opts = {}) {
   currentMode = mode;
+  if (mode === "settings") cancelPendingPanelBlurDismiss();
   const win = createPanelWindow();
   const compact = !!opts.compact;
   const fromShortcut = !!opts.fromShortcut;
@@ -1191,14 +1360,21 @@ function ensurePanelVisible(mode, opts = {}) {
   }
 
   const payload = buildModePayload(mode);
-  const message = { mode, ...payload, compact };
+  const pasteOnClick =
+    !!fromShortcut && (mode === "clipboard" || mode === "templates");
+  const message = { mode, ...payload, compact, pasteOnClick };
   if (win.webContents.isLoading()) uiUpdatePending = message;
   else win.webContents.send("ui:update", message);
 
   if (!win.isVisible()) {
     // On macOS, activating this app can switch Spaces / steal focus (notably from Chrome).
     // Prefer showing inactive for global shortcuts so the current app stays active.
-    if (process.platform === "darwin" && fromShortcut && typeof win.showInactive === "function") {
+    const shouldShowInactive =
+      process.platform === "darwin" &&
+      fromShortcut &&
+      (mode === "clipboard" || mode === "templates") &&
+      typeof win.showInactive === "function";
+    if (shouldShowInactive) {
       win.showInactive();
     } else {
       win.show();
@@ -1206,7 +1382,10 @@ function ensurePanelVisible(mode, opts = {}) {
   }
   // When shown inactive, the panel won't receive key events until clicked.
   const shouldAvoidActivation =
-    process.platform === "darwin" && fromShortcut && typeof win.showInactive === "function";
+    process.platform === "darwin" &&
+    fromShortcut &&
+    (mode === "clipboard" || mode === "templates") &&
+    typeof win.showInactive === "function";
   if (!shouldAvoidActivation) {
     // Focus must move to ClipNinja so arrow keys navigate the overlay; paste still targets the
     // app captured in captureFrontmostPidSync() before this window was shown.
@@ -1231,11 +1410,17 @@ function openTemplatesEditor(templateId) {
   hideTemplatesFlyoutWindow();
 
   const win = createPanelWindow();
-  win.setSize(420, 560);
+  win.setSize(480, 680);
   positionPanelWindow({ fromShortcut: false });
 
   const payload = buildModePayload("templates");
-  const message = { mode: "templates", ...payload, compact: false, editTemplateId: templateId || null };
+  const message = {
+    mode: "templates",
+    ...payload,
+    compact: false,
+    pasteOnClick: false,
+    editTemplateId: templateId || null,
+  };
   if (win.webContents.isLoading()) uiUpdatePending = message;
   else win.webContents.send("ui:update", message);
 
@@ -1311,6 +1496,8 @@ function flattenTemplatesForUI(templates) {
 async function pasteText(text) {
   const normalized = normalizeText(text);
   if (!normalized) return;
+
+  disableOverlayNavShortcuts();
 
   if (panelWindow) {
     panelWindow.hide();
@@ -1523,6 +1710,12 @@ function bindIpc() {
     disableOverlayNavShortcuts();
   });
 
+  ipcMain.on("ui:set-panel-mode", (_evt, { mode } = {}) => {
+    if (typeof mode !== "string" || !mode) return;
+    currentMode = mode;
+    if (mode === "settings") cancelPendingPanelBlurDismiss();
+  });
+
   ipcMain.on("ui:open-templates-editor", (_evt, { id } = {}) => {
     openTemplatesEditor(id);
   });
@@ -1653,7 +1846,7 @@ function bindIpc() {
     await pasteText(text);
   });
 
-  ipcMain.handle("templates:save", (_evt, { group, name, text }) => {
+  ipcMain.handle("templates:save", (_evt, { id, group, name, text }) => {
     const normalizedGroup = (group || "").trim() || "General";
     const normalizedName = (name || "").trim();
     const normalizedText = normalizeText(text || "");
@@ -1662,6 +1855,19 @@ function bindIpc() {
     const settings = getSettings();
     const templates = getTemplates();
     const now = Date.now();
+
+    if (id) {
+      const byId = templates.find((t) => t.id === id);
+      if (byId) {
+        byId.group = normalizedGroup;
+        byId.name = normalizedName;
+        byId.text = normalizedText;
+        byId.updatedAt = now;
+        setTemplates(enforceSavedClipLimits(templates, settings));
+        return { ok: true, id: byId.id };
+      }
+    }
+
     const existingExact = templates.find((t) => t.group === normalizedGroup && t.name === normalizedName);
 
     if (existingExact) {
@@ -1684,7 +1890,7 @@ function bindIpc() {
       });
     }
     setTemplates(enforceSavedClipLimits(templates, settings));
-    return { ok: true };
+    return { ok: true, id: existingExact?.id || templates[0]?.id };
   });
 
   ipcMain.handle("templates:delete", (_evt, { id }) => {
@@ -1800,22 +2006,15 @@ app.on("will-quit", () => {
 function setupTray() {
   if (tray) return;
 
-  const pngPath = ensurePngIconExists();
-  let icon = nativeImage.createFromPath(pngPath);
-
-  if (!icon || icon.isEmpty()) {
-    const svgPath = path.join(__dirname, "..", "..", "assets", "icon.svg");
-    const svgText = fs.readFileSync(svgPath, "utf8");
-    icon = createNativeImageFromSvg(svgText);
-  }
-
-  if (!icon || icon.isEmpty()) {
+  const base = loadTrayIconBase();
+  if (!base) {
     console.error("Tray icon empty (png+svg). Check assets/icon.png existence.");
     return;
   }
 
-  tray = new Tray(icon.resize({ width: 22, height: 22 }));
-  tray.setToolTip(APP_NAME);
+  const icon = buildTrayImageWithBadges(false, false);
+  tray = new Tray(icon || base.resize({ width: getTrayIconPixelSize(), height: getTrayIconPixelSize() }));
+  refreshTrayIcon();
 
   tray.setContextMenu(buildTrayMenu());
 
@@ -1826,4 +2025,3 @@ function setupTray() {
     tray.popUpContextMenu(menu, { x, y });
   });
 }
-
