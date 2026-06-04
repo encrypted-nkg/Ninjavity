@@ -13,6 +13,7 @@ Minimal clipboard + template manager.
 - Paste selected item/template:
   - Select an item in the overlay, press `Enter` (copies to clipboard + triggers `Cmd+V`)
 - Start on login toggle inside the UI.
+- **Today on login** (Settings, on by default): opens today’s todo list after macOS sign-in, unlock, or when the app starts at login.
 
 ## Run (dev)
 1. `cd ClipNinja`

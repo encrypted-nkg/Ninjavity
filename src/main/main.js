@@ -10,6 +10,7 @@ const {
   nativeTheme,
   screen,
   Notification,
+  powerMonitor,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -46,6 +47,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   savedGroupsMax: 10,
   savedPerGroup: 10,
   theme: "system",
+  /** Open today's todo panel after macOS login / unlock (default on). */
+  openTodosTodayOnLogin: true,
 });
 
 let store = null;
@@ -711,6 +714,7 @@ function getSettings() {
     savedGroupsMax: clampInt(raw.savedGroupsMax, 1, LIMIT_MAX_GROUPS, DEFAULT_SETTINGS.savedGroupsMax),
     savedPerGroup: clampInt(raw.savedPerGroup, 1, LIMIT_MAX_PER_GROUP, DEFAULT_SETTINGS.savedPerGroup),
     theme: normalizeThemePreference(raw.theme),
+    openTodosTodayOnLogin: raw.openTodosTodayOnLogin !== false,
   };
 }
 
@@ -823,6 +827,7 @@ function setSettings(partial) {
     savedGroupsMax: clampInt(merged.savedGroupsMax, 1, LIMIT_MAX_GROUPS, DEFAULT_SETTINGS.savedGroupsMax),
     savedPerGroup: clampInt(merged.savedPerGroup, 1, LIMIT_MAX_PER_GROUP, DEFAULT_SETTINGS.savedPerGroup),
     theme: normalizeThemePreference(merged.theme),
+    openTodosTodayOnLogin: merged.openTodosTodayOnLogin !== false,
   };
 
   store.set("settings", next);
@@ -1604,6 +1609,62 @@ async function pasteText(text) {
   }
 }
 
+let lastOpenTodosTodayOnLoginAt = 0;
+let openTodosTodayOnLoginTimer = null;
+
+function getMacBootSessionId() {
+  if (process.platform !== "darwin") return "";
+  try {
+    return execFileSync("sysctl", ["-n", "kern.boottime"], { encoding: "utf8" }).trim();
+  } catch (_) {
+    return "";
+  }
+}
+
+function scheduleOpenTodosTodayOnLogin(reason) {
+  if (!getSettings().openTodosTodayOnLogin) return;
+  if (openTodosTodayOnLoginTimer) clearTimeout(openTodosTodayOnLoginTimer);
+  openTodosTodayOnLoginTimer = setTimeout(() => {
+    openTodosTodayOnLoginTimer = null;
+    openTodosTodayOnLoginNow(reason);
+  }, 1200);
+}
+
+function openTodosTodayOnLoginNow(reason) {
+  if (!getSettings().openTodosTodayOnLogin) return;
+
+  const now = Date.now();
+  if (now - lastOpenTodosTodayOnLoginAt < 2500) return;
+  lastOpenTodosTodayOnLoginAt = now;
+
+  if (panelWindow && !panelWindow.isDestroyed() && panelWindow.isVisible() && currentMode === "todosToday") {
+    return;
+  }
+
+  if (reason === "launch") {
+    const bootId = getMacBootSessionId();
+    if (bootId) {
+      const seen = store?.get("lastTodosTodayOpenBootSession", "");
+      if (seen === bootId) return;
+      store.set("lastTodosTodayOpenBootSession", bootId);
+    }
+  }
+
+  ensurePanelVisible("todosToday", { compact: true, fromShortcut: false });
+}
+
+function setupOpenTodosTodayOnLoginWatchers() {
+  if (process.platform !== "darwin") return;
+
+  powerMonitor.on("unlock-screen", () => {
+    scheduleOpenTodosTodayOnLogin("unlock");
+  });
+
+  powerMonitor.on("resume", () => {
+    scheduleOpenTodosTodayOnLogin("resume");
+  });
+}
+
 function setupClipboardListener() {
   if (clipboardPollInterval) clearInterval(clipboardPollInterval);
 
@@ -1984,6 +2045,8 @@ app.whenReady().then(() => {
     setupGlobalShortcuts();
     setDockIcon();
     setupTray();
+    setupOpenTodosTodayOnLoginWatchers();
+    scheduleOpenTodosTodayOnLogin("launch");
 
     if (process.platform === "darwin") {
       tickMacFrontmostPoll();

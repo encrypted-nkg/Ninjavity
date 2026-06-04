@@ -45,6 +45,7 @@ const settingsSection = document.getElementById("settingsSection");
 const infoSection = document.getElementById("infoSection");
 const infoScroll = document.getElementById("infoScroll");
 const toggleStartupBtnSettings = document.getElementById("toggleStartupBtnSettings");
+const toggleOpenTodosTodayOnLoginBtn = document.getElementById("toggleOpenTodosTodayOnLoginBtn");
 const setClipboardGroups = document.getElementById("setClipboardGroups");
 const setClipboardPerGroup = document.getElementById("setClipboardPerGroup");
 const setSavedGroupsMax = document.getElementById("setSavedGroupsMax");
@@ -1388,6 +1389,8 @@ function showMode(mode, payload) {
   toggleStartupBtnSettings.dataset.enabled = enabled ? "1" : "0";
   toggleStartupBtnSettings.textContent = enabled ? "Start on login: On" : "Start on login: Off";
 
+  syncOpenTodosTodayOnLoginToggle(payload?.settings);
+
   const s = payload?.settings;
   if (s) {
     setClipboardGroups.value = String(s.clipboardGroups ?? "");
@@ -1421,6 +1424,13 @@ async function loadStartupToggle() {
   if (!toggleStartupBtnSettings) return;
   toggleStartupBtnSettings.dataset.enabled = enabled ? "1" : "0";
   toggleStartupBtnSettings.textContent = enabled ? "Start on login: On" : "Start on login: Off";
+}
+
+function syncOpenTodosTodayOnLoginToggle(settings) {
+  if (!toggleOpenTodosTodayOnLoginBtn) return;
+  const on = settings?.openTodosTodayOnLogin !== false;
+  toggleOpenTodosTodayOnLoginBtn.dataset.enabled = on ? "1" : "0";
+  toggleOpenTodosTodayOnLoginBtn.textContent = on ? "Show today on login: On" : "Show today on login: Off";
 }
 
 function selectedClipboardText() {
@@ -1852,6 +1862,15 @@ function wireUI() {
     await loadStartupToggle();
   });
 
+  if (toggleOpenTodosTodayOnLoginBtn) {
+    toggleOpenTodosTodayOnLoginBtn.addEventListener("click", async () => {
+      const next = toggleOpenTodosTodayOnLoginBtn.dataset.enabled !== "1";
+      const final = await api.setSettings({ openTodosTodayOnLogin: next });
+      syncOpenTodosTodayOnLoginToggle(final);
+      setSettingsStatus(next ? "Today on login enabled." : "Today on login disabled.");
+    });
+  }
+
   saveSettingsBtn.addEventListener("click", async () => {
     setSettingsStatus("");
     saveSettingsBtn.disabled = true;
@@ -1863,8 +1882,10 @@ function wireUI() {
         savedGroupsMax: Number(setSavedGroupsMax.value),
         savedPerGroup: Number(setSavedPerGroup.value),
         ...(themeSelect ? { theme: themeSelect.value } : {}),
+        openTodosTodayOnLogin: toggleOpenTodosTodayOnLoginBtn?.dataset.enabled !== "0",
       };
       const final = await api.setSettings(partial);
+      syncOpenTodosTodayOnLoginToggle(final);
       setClipboardGroups.value = String(final.clipboardGroups);
       setClipboardPerGroup.value = String(final.clipboardPerGroup);
       setSavedGroupsMax.value = String(final.savedGroupsMax);
@@ -1906,9 +1927,14 @@ api.getTemplatesAll().then((all) => {
   syncTemplateGroupDatalist();
 });
 
-api.getSettings().then((s) => {
+Promise.all([api.getSettings(), api.getStartupEnabled()]).then(([s, startupEnabled]) => {
   if (themeSelect) themeSelect.value = s.theme || "system";
   applyThemeFromSettings(s);
+  syncOpenTodosTodayOnLoginToggle(s);
+  if (toggleStartupBtnSettings) {
+    toggleStartupBtnSettings.dataset.enabled = startupEnabled ? "1" : "0";
+    toggleStartupBtnSettings.textContent = startupEnabled ? "Start on login: On" : "Start on login: Off";
+  }
 });
 
 api.onThemeChange(({ effective }) => {

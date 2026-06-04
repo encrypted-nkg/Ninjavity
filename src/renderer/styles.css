@@ -790,6 +790,12 @@ body:has(.app.quick-todo) {
   color: var(--muted);
 }
 
+.settings-login-hint {
+  margin: -2px 0 4px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .input {
   width: 100%;
   background: transparent;
