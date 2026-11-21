@@ -1,4 +1,4 @@
-/* global api */
+/* global api, FlyoutList, addSnippetEditButton, ListReorder */
 const rootEl = document.getElementById("root");
 const modeTitle = document.getElementById("modeTitle");
 const closeBtn = document.getElementById("closeBtn");
@@ -160,12 +160,11 @@ function hideClipboardFlyout() {
   if (!clipboardFlyout) return;
   clipboardFlyout.classList.add("hidden");
   clipboardFlyout.setAttribute("aria-hidden", "true");
-  clipboardFlyout.innerHTML = "";
+  clipboardInlineView.reset();
 }
 
-function fillClipboardFlyoutContent(group, selectedItemIndex = -1) {
-  if (!clipboardFlyout) return;
-  clipboardFlyout.innerHTML = "";
+const clipboardInlineView = new FlyoutList(clipboardFlyout, (payload) => {
+  const group = { name: payload.entries[0]?.group, entries: payload.entries };
   if (!group?.entries?.length) {
     const empty = document.createElement("div");
     empty.className = "clip-flyout-empty";
@@ -176,7 +175,6 @@ function fillClipboardFlyoutContent(group, selectedItemIndex = -1) {
   group.entries.forEach((entry, i) => {
     const div = document.createElement("div");
     div.className = "clip-flyout-item";
-    if (i === selectedItemIndex) div.classList.add("selected");
     div.innerHTML = `<div class="clip-flyout-text">${escapeHtml(entry.text)}</div><div class="meta">${formatTime(entry.copiedAt)}</div>`;
     div.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -184,10 +182,10 @@ function fillClipboardFlyoutContent(group, selectedItemIndex = -1) {
     });
     clipboardFlyout.appendChild(div);
   });
-  requestAnimationFrame(() => {
-    const sel = clipboardFlyout.querySelector(".clip-flyout-item.selected");
-    if (sel) sel.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  });
+});
+
+function fillClipboardFlyoutContent(group, selectedItemIndex = -1) {
+  clipboardInlineView.render({ entries: group?.entries || [], selectedItemIndex });
 }
 
 function hideTemplatesFlyout() {
@@ -201,12 +199,25 @@ function hideTemplatesFlyout() {
   if (!templatesFlyout) return;
   templatesFlyout.classList.add("hidden");
   templatesFlyout.setAttribute("aria-hidden", "true");
-  templatesFlyout.innerHTML = "";
+  templatesInlineView.reset();
 }
 
-function fillTemplatesFlyoutContent(group, selectedItemIndex = -1) {
-  if (!templatesFlyout) return;
-  templatesFlyout.innerHTML = "";
+let templatesReordering = false;
+function setTemplateReordering(active) {
+  templatesReordering = active;
+  if (active) {
+    clearTimeout(templatesFlyoutLeaveTimer);
+    templatesFlyoutLeaveTimer = null;
+  }
+  api.setAutoDismiss?.(!active);
+}
+const templateGroupReorder = new ListReorder(templatesGroupList, '.clip-group-wrap',
+  move => api.reorderTemplates({ kind: 'group', ...move }), setTemplateReordering);
+const templateItemReorder = new ListReorder(templatesFlyout, '.clip-flyout-item',
+  move => api.reorderTemplates({ kind: 'snippet', ...move }), setTemplateReordering);
+
+const templatesInlineView = new FlyoutList(templatesFlyout, (payload) => {
+  const group = { name: payload.entries[0]?.group, items: payload.entries };
   if (!group?.items?.length) {
     const empty = document.createElement("div");
     empty.className = "clip-flyout-empty";
@@ -217,16 +228,16 @@ function fillTemplatesFlyoutContent(group, selectedItemIndex = -1) {
   group.items.forEach((entry, i) => {
     const div = document.createElement("div");
     div.className = "clip-flyout-item";
-    if (i === selectedItemIndex) div.classList.add("selected");
     const meta = [entry.name || "Untitled", entry.group || group.name].filter(Boolean).join(" · ");
     div.innerHTML = `<div class="clip-flyout-text">${escapeHtml(entry.text || "")}</div><div class="meta">${escapeHtml(meta)}</div>`;
     wireTemplateSnippetItem(div, entry);
+    templateItemReorder.addHandle(div, entry.id, entry.name || "snippet");
     templatesFlyout.appendChild(div);
   });
-  requestAnimationFrame(() => {
-    const sel = templatesFlyout.querySelector(".clip-flyout-item.selected");
-    if (sel) sel.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  });
+});
+
+function fillTemplatesFlyoutContent(group, selectedItemIndex = -1) {
+  templatesInlineView.render({ entries: (group?.items || []).map(entry => ({ ...entry, group: entry.group || group.name })), selectedItemIndex });
 }
 
 function syncTemplatesFlyout() {
@@ -266,6 +277,8 @@ function syncTemplatesFlyout() {
         pasteOnClick: templatesPasteOnClick,
         entries: (group.items || []).map((item) => ({
           id: item.id || null,
+          group: item.group || group.name,
+          name: item.name || "Untitled",
           text: item.text || "",
           meta: [item.name || "Untitled", item.group || group.name].filter(Boolean).join(" · "),
         })),
@@ -280,6 +293,7 @@ function syncTemplatesFlyout() {
   fillTemplatesFlyoutContent(group, itemSel);
   templatesFlyout.classList.remove("hidden");
   templatesFlyout.setAttribute("aria-hidden", "false");
+  templatesInlineView.revealSelection();
 }
 
 function setTemplateGroupIndex(nextIdx) {
@@ -339,6 +353,7 @@ function syncClipboardFlyout() {
   fillClipboardFlyoutContent(group, itemSel);
   clipboardFlyout.classList.remove("hidden");
   clipboardFlyout.setAttribute("aria-hidden", "false");
+  clipboardInlineView.revealSelection();
 }
 
 function setClipboardGroupIndex(nextIdx) {
@@ -386,6 +401,12 @@ function openSnippetEditor(template) {
   updateSnippetEditorCharCount();
   snippetEditorOverlay.classList.remove("hidden");
   snippetEditorOverlay.setAttribute("aria-hidden", "false");
+  // Nothing may auto-close the panel while an edit is in progress.
+  try {
+    api.setAutoDismiss?.(false);
+  } catch (_) {
+    // ignore
+  }
   requestAnimationFrame(() => {
     try {
       snippetEditorText?.focus?.();
@@ -403,6 +424,11 @@ function closeSnippetEditor() {
   snippetEditorOverlay.setAttribute("aria-hidden", "true");
   setSnippetEditorStatus("");
   editingTemplateId = null;
+  try {
+    api.setAutoDismiss?.(true);
+  } catch (_) {
+    // ignore
+  }
 }
 
 function openSnippetEditorById(id) {
@@ -424,7 +450,7 @@ async function refreshTemplatesAfterEdit() {
   lastTemplatesAll = all;
   const grouped = groupTemplatesForLocal(all);
   lastTemplatesGrouped = grouped;
-  renderTemplatesConfigList(all);
+  syncTemplateGroupDatalist();
   if (uiMode === "templates" && templateView === "list") {
     renderTemplatesList(grouped);
   }
@@ -455,8 +481,17 @@ async function saveSnippetEditor() {
 function wireTemplateSnippetItem(div, entry) {
   let clickTimer = null;
   let suppressClickPaste = false;
+  div.addEventListener('reorder-start', () => {
+    if (clickTimer) clearTimeout(clickTimer);
+    clickTimer = null;
+  });
   const text = entry.text || "";
   const id = entry.id || null;
+  if (id) addSnippetEditButton(div, entry.name, () => {
+    if (clickTimer) clearTimeout(clickTimer);
+    clickTimer = null;
+    api.openTemplatesEditor(id);
+  });
   div.title = templatesPasteOnClick ? "Click to paste · double-click to edit" : "Double-click to edit";
   div.addEventListener("click", (ev) => {
     ev.stopPropagation();
@@ -494,40 +529,30 @@ function clearTemplatesCompactSizingClasses() {
   if (rootEl) rootEl.classList.remove("templates-compact-dual--locked");
 }
 
+// Geometry reads synchronously lay out the text-only panel, even while hidden.
+// No animation-frame/timer round trip is needed before reporting its height.
+function reportCompactMainHeight() {
+  const root = document.getElementById("root");
+  if (!root) return;
+  const h = Math.ceil(Math.max(root.scrollHeight, root.getBoundingClientRect().height));
+  const capped = Math.min(Math.max(h, 96), 560);
+  try {
+    api.reportClipboardMainHeight(capped);
+  } catch (_) {
+    // ignore
+  }
+}
+
 function reportClipboardCompactMainHeightIfNeeded() {
   if (!clipboardCompact || uiMode !== "clipboard") return;
   clearClipboardCompactSizingClasses();
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      const root = document.getElementById("root");
-      if (!root) return;
-      const h = Math.ceil(root.scrollHeight);
-      const capped = Math.min(Math.max(h, 96), 560);
-      try {
-        api.reportClipboardMainHeight(capped);
-      } catch (_) {
-        // ignore
-      }
-    });
-  });
+  reportCompactMainHeight();
 }
 
 function reportTemplatesCompactMainHeightIfNeeded() {
   if (!templatesCompact || uiMode !== "templates") return;
   clearTemplatesCompactSizingClasses();
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      const root = document.getElementById("root");
-      if (!root) return;
-      const h = Math.ceil(root.scrollHeight);
-      const capped = Math.min(Math.max(h, 96), 560);
-      try {
-        api.reportClipboardMainHeight(capped);
-      } catch (_) {
-        // ignore
-      }
-    });
-  });
+  reportCompactMainHeight();
 }
 
 function renderClipboardList(items, settings) {
@@ -556,7 +581,7 @@ function renderClipboardList(items, settings) {
   for (let gi = 0; gi < numGroups; gi++) {
     const start = gi * perGroup;
     const chunk = clipboardItems.slice(start, start + perGroup);
-    clipboardGroupRows.push({ name: `Clip${gi + 1}`, entries: chunk });
+    clipboardGroupRows.push({ name: `Clips ${gi + 1}`, entries: chunk });
   }
 
   clipboardGroupRows.forEach((group, idx) => {
@@ -567,7 +592,7 @@ function renderClipboardList(items, settings) {
 
     const row = document.createElement("div");
     row.className = "clip-group-row";
-    row.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="chevron">›</span>`;
+    row.innerHTML = `<span class="group-name">${escapeHtml(group.name)}</span><span class="group-count">${group.entries.length}</span><span class="chevron" aria-hidden="true">›</span>`;
     li.appendChild(row);
 
     li.addEventListener("mouseenter", () => {
@@ -608,11 +633,15 @@ function renderClipboardList(items, settings) {
   reportClipboardCompactMainHeightIfNeeded();
 }
 
-function renderTemplatesList(grouped) {
+function renderTemplatesList(grouped, preserve = false) {
+  const previousGroup = templateGroupRows[selectedIndex]?.name;
+  const previousItem = templateGroupRows[selectedIndex]?.items[templateItemIndex]?.id;
+  const previousPane = templateNavPane;
+  const wasShowing = templateKeyboardNav || templateHoverIndex !== null || previousPane === 'items';
   clearTimeout(templatesFlyoutLeaveTimer);
   templatesFlyoutLeaveTimer = null;
   templatesFlyoutPeerHover = false;
-  hideTemplatesFlyout();
+  if (!preserve) hideTemplatesFlyout();
   templateHoverIndex = null;
   templateKeyboardNav = false;
   templatesFlyoutMouseInside = false;
@@ -630,7 +659,7 @@ function renderTemplatesList(grouped) {
   if (!templateGroupRows.length) {
     const li = document.createElement("li");
     li.className = "item";
-    li.innerHTML = `<div class="itemText">No templates saved.</div><div class="itemMeta">Switch to Configure to add one.</div>`;
+    li.innerHTML = `<div class="itemText">No templates saved.</div><div class="itemMeta">Add your first snippet from the menu bar → SavedClip.</div>`;
     templatesGroupList.appendChild(li);
     selectedIndex = -1;
     reportTemplatesCompactMainHeightIfNeeded();
@@ -645,10 +674,12 @@ function renderTemplatesList(grouped) {
 
     const row = document.createElement("div");
     row.className = "clip-group-row";
-    row.innerHTML = `<span>${escapeHtml(group.name)}</span><span class="chevron">›</span>`;
+    row.innerHTML = `<span class="group-name">${escapeHtml(group.name)}</span><span class="group-count">${group.items.length}</span><span class="chevron" aria-hidden="true">›</span>`;
     li.appendChild(row);
+    templateGroupReorder.addHandle(li, group.name, group.name, row);
 
     li.addEventListener("mouseenter", () => {
+      if (templatesReordering) return;
       if (templatesCompact) {
         clearTimeout(templatesFlyoutLeaveTimer);
         templatesFlyoutLeaveTimer = null;
@@ -659,6 +690,7 @@ function renderTemplatesList(grouped) {
       setTemplateGroupIndex(idx);
     });
     li.addEventListener("mouseleave", () => {
+      if (templatesReordering) return;
       templateHoverIndex = null;
       if (templatesCompact) {
         clearTimeout(templatesFlyoutLeaveTimer);
@@ -674,6 +706,7 @@ function renderTemplatesList(grouped) {
     });
 
     li.addEventListener("click", () => {
+      if (templatesReordering) return;
       templateNavPane = "groups";
       templateItemIndex = 0;
       setTemplateGroupIndex(idx);
@@ -682,7 +715,13 @@ function renderTemplatesList(grouped) {
     templatesGroupList.appendChild(li);
   });
 
-  setTemplateGroupIndex(0);
+  const nextIndex = preserve ? Math.max(0, templateGroupRows.findIndex(g => g.name === previousGroup)) : 0;
+  if (preserve) {
+    templateNavPane = previousPane;
+    templateKeyboardNav = wasShowing;
+    templateItemIndex = Math.max(0, templateGroupRows[nextIndex]?.items.findIndex(t => t.id === previousItem) ?? 0);
+  }
+  setTemplateGroupIndex(nextIndex);
   reportTemplatesCompactMainHeightIfNeeded();
 }
 
@@ -1146,6 +1185,10 @@ function showMode(mode, payload) {
       // ignore
     }
     clearClipboardCompactSizingClasses();
+    // The dual-pane class drives a `html:has(...)` rule that makes the document shrink-wrap its
+    // content. Left behind by a previous Cmd+Shift+V it collapses the next panel to content height
+    // inside a taller window, leaving dead space below the last row.
+    if (rootEl) rootEl.classList.remove("clipboard-compact-dual");
   }
   if (mode !== "templates") {
     try {
@@ -1154,6 +1197,7 @@ function showMode(mode, payload) {
       // ignore
     }
     clearTemplatesCompactSizingClasses();
+    if (rootEl) rootEl.classList.remove("templates-compact-dual");
   }
   if (todosTodaySection) {
     todosTodaySection.classList.add("hidden");
@@ -1172,7 +1216,7 @@ function showMode(mode, payload) {
     tabTodos.classList.remove("active");
     tabSettings.classList.remove("active");
     clipboardSection.classList.remove("hidden");
-    clipboardSection.style.display = "block";
+    clipboardSection.style.display = "flex";
     templatesSection.classList.add("hidden");
     templatesSection.style.display = "none";
     todosSection.classList.add("hidden");
@@ -1298,13 +1342,13 @@ function showMode(mode, payload) {
     templatesSection.classList.remove("hidden");
     clipboardSection.classList.add("hidden");
     clipboardSection.style.display = "none";
-    templatesSection.style.display = "block";
+    templatesSection.style.display = "flex";
     todosSection.classList.add("hidden");
     todosSection.style.display = "none";
     settingsSection.classList.add("hidden");
     settingsSection.style.display = "none";
 
-    modeTitle.textContent = "Templates";
+    modeTitle.textContent = "Saved snippets";
     applyTemplatesPayload(payload);
     if (payload?.settings) applyThemeFromSettings(payload.settings);
     const editId = payload?.editTemplateId || null;
@@ -1382,12 +1426,11 @@ function showMode(mode, payload) {
   todosSection.style.display = "none";
 
   settingsSection.classList.remove("hidden");
-  settingsSection.style.display = "block";
+  settingsSection.style.display = "flex";
   modeTitle.textContent = "Settings";
 
   const enabled = !!payload?.startupEnabled;
-  toggleStartupBtnSettings.dataset.enabled = enabled ? "1" : "0";
-  toggleStartupBtnSettings.textContent = enabled ? "Start on login: On" : "Start on login: Off";
+  setSwitchState(toggleStartupBtnSettings, enabled);
 
   syncOpenTodosTodayOnLoginToggle(payload?.settings);
 
@@ -1419,18 +1462,25 @@ function escapeHtml(s) {
     .replaceAll("'", "&#039;");
 }
 
+// Pill switches in Settings: the row label names the setting, so the control
+// only reports its state. aria-checked keeps it a real switch for VoiceOver.
+function setSwitchState(btn, on) {
+  if (!btn) return;
+  btn.dataset.enabled = on ? "1" : "0";
+  btn.setAttribute("aria-checked", on ? "true" : "false");
+  btn.textContent = on ? "On" : "Off";
+}
+
 async function loadStartupToggle() {
   const enabled = await api.getStartupEnabled();
   if (!toggleStartupBtnSettings) return;
-  toggleStartupBtnSettings.dataset.enabled = enabled ? "1" : "0";
-  toggleStartupBtnSettings.textContent = enabled ? "Start on login: On" : "Start on login: Off";
+  setSwitchState(toggleStartupBtnSettings, enabled);
 }
 
 function syncOpenTodosTodayOnLoginToggle(settings) {
   if (!toggleOpenTodosTodayOnLoginBtn) return;
   const on = settings?.openTodosTodayOnLogin !== false;
-  toggleOpenTodosTodayOnLoginBtn.dataset.enabled = on ? "1" : "0";
-  toggleOpenTodosTodayOnLoginBtn.textContent = on ? "Show today on login: On" : "Show today on login: Off";
+  setSwitchState(toggleOpenTodosTodayOnLoginBtn, on);
 }
 
 function selectedClipboardText() {
@@ -1460,6 +1510,9 @@ async function pasteSelected() {
 }
 
 function onKeyDown(ev) {
+  if (isSnippetEditorOpen() && ev.key !== "Escape") return;
+  if (uiMode !== "todoQuickAdd" && uiMode !== "todosToday" && ev.key !== "Escape" &&
+      ev.target?.closest?.("input, textarea, select, [contenteditable=true]")) return;
   if (uiMode === "todoQuickAdd" && ev.key === "Enter") {
     const t = ev.target;
     if (t === todoQuickInput || t === todoQuickDate) {
@@ -1517,6 +1570,8 @@ function onKeyDown(ev) {
       return;
     }
     if (uiMode === "settings") {
+      ev.preventDefault();
+      api.close();
       return;
     }
     hideClipboardFlyout();
@@ -1734,6 +1789,23 @@ function wireUI() {
 
   document.addEventListener("keydown", onKeyDown);
 
+  // Tell the main process the panel is being used, so it does not auto-dismiss mid-interaction.
+  // Throttled: pointer moves fire continuously and the main process only needs a heartbeat.
+  let lastInteractionSentAt = 0;
+  const reportInteraction = () => {
+    const now = Date.now();
+    if (now - lastInteractionSentAt < 200) return;
+    lastInteractionSentAt = now;
+    try {
+      api.reportInteraction?.();
+    } catch (_) {
+      // ignore
+    }
+  };
+  for (const evt of ["keydown", "mousedown", "wheel", "input", "mousemove"]) {
+    document.addEventListener(evt, reportInteraction, { passive: true, capture: true });
+  }
+
   if (api.onClipboardFlyoutPeerHover) {
     api.onClipboardFlyoutPeerHover((inside) => {
       clipboardFlyoutPeerHover = !!inside;
@@ -1798,6 +1870,7 @@ function wireUI() {
       templatesFlyoutMouseInside = true;
     });
     templatesFlyout.addEventListener("mouseleave", () => {
+      if (templatesReordering) return;
       templatesFlyoutMouseInside = false;
       templateHoverIndex = null;
       setTimeout(() => syncTemplatesFlyout(), 50);
@@ -1932,8 +2005,7 @@ Promise.all([api.getSettings(), api.getStartupEnabled()]).then(([s, startupEnabl
   applyThemeFromSettings(s);
   syncOpenTodosTodayOnLoginToggle(s);
   if (toggleStartupBtnSettings) {
-    toggleStartupBtnSettings.dataset.enabled = startupEnabled ? "1" : "0";
-    toggleStartupBtnSettings.textContent = startupEnabled ? "Start on login: On" : "Start on login: Off";
+    setSwitchState(toggleStartupBtnSettings, startupEnabled);
   }
 });
 
@@ -1960,3 +2032,14 @@ if (api.onNavKey) {
   });
 }
 
+api.onTemplatesOrderChanged?.(({ templates, move }) => {
+  lastTemplatesAll = templates;
+  lastTemplatesGrouped = groupTemplatesForLocal(templates);
+  if (uiMode !== 'templates' || templateView !== 'list') return;
+  if (move.kind === 'snippet') {
+    const group = templateGroupRows[selectedIndex];
+    const index = group?.items.findIndex(item => item.id === move.source) ?? -1;
+    if (index >= 0) { templateItemIndex = index; templateNavPane = 'items'; }
+  }
+  renderTemplatesList(lastTemplatesGrouped, true);
+});

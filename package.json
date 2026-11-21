@@ -1,24 +1,29 @@
 {
   "name": "clipninja",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Minimal clipboard and template manager for macOS (Cmd+Shift+V / Cmd+Shift+B).",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "lint": "echo \"No linter configured\"",
+    "lint": "node --check src/main/main.js && node --check src/main/panel-lifecycle.js && node --check src/main/preload.js && node --check src/renderer/renderer.js && node --check src/renderer/flyout-list.js && node --check src/renderer/clipboard-flyout.js && node --check src/renderer/templates-flyout.js && node --check src/main/template-order.js && node --check src/renderer/list-reorder.js && node --check src/main/lifecycle-log.js",
     "dev": "electron .",
-    "dist": "electron-builder --mac",
-    "dist:dmg": "electron-builder --mac dmg",
+    "postinstall": "bash scripts/postinstall-electron-mac.sh",
+    "fix:electron-mac": "bash scripts/postinstall-electron-mac.sh",
+    "dist": "electron-builder --mac --universal",
+    "dist:dmg": "electron-builder --mac dmg --universal",
+    "dist:signed": "electron-builder --mac --publish never -c.mac.notarize=true",
     "mac:reset-apple-events": "bash -c 'echo \"Resetting Apple Events (Automation) for all apps. You will be prompted again.\"; tccutil reset AppleEvents'",
-    "icon:png": "sips -s format png assets/icon.svg --out assets/icon.png || true"
+    "icon:png": "swift scripts/generate-icons.swift",
+    "app:install": "bash scripts/install-macos-app.sh",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "auto-launch": "^5.0.6",
     "electron-store": "^10.0.0"
   },
   "devDependencies": {
-    "electron": "^31.5.1",
+    "electron": "^36.9.5",
     "electron-builder": "^25.1.8"
   },
   "build": {
@@ -30,10 +35,52 @@
     },
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dmg", "zip"],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "gatekeeperAssess": false,
       "extendInfo": {
-        "NSAppleEventsUsageDescription": "ClipNinja uses Automation to detect the app you were using and to paste text into its text field via System Events."
-      }
+        "LSUIElement": true,
+        "NSAppleEventsUsageDescription": "ClipNinja uses Automation to detect the app you were using and to paste text into its text field via System Events.",
+        "NSAccessibilityUsageDescription": "ClipNinja needs Accessibility access to paste the selected clip into the app you were working in."
+      },
+      "minimumSystemVersion": "11.0",
+      "darkModeSupport": true
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "dmg": {
+      "title": "ClipNinja",
+      "contents": [
+        {
+          "x": 140,
+          "y": 180,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 180,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     }
   }
 }

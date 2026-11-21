@@ -1,4 +1,4 @@
-/* global api */
+/* global api, FlyoutList */
 
 function escapeHtml(s) {
   return String(s)
@@ -15,48 +15,32 @@ function formatTime(epochMs) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function clearFlyoutSizingClass() {
-  document.documentElement.classList.remove("flyout-sized");
-}
-
+// All content is local text with system fonts. Reading geometry flushes layout
+// now; waiting for two animation frames adds latency to hidden/occluded windows.
 function reportFlyoutHeight() {
-  clearFlyoutSizingClass();
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      const root = document.getElementById("flyoutRoot");
-      if (!root) return;
-      const h = Math.ceil(root.scrollHeight);
-      const capped = Math.min(Math.max(h, 96), 560);
-      try {
-        api.reportClipboardFlyoutHeight(capped);
-      } catch (_) {
-        // ignore
-      }
-    });
-  });
+  const root = document.getElementById("flyoutRoot");
+  if (!root) return;
+  const h = listView.naturalHeight(root);
+  api.reportClipboardFlyoutHeight(Math.min(Math.max(h, 96), 560));
 }
 
-function render(payload) {
+function buildCards(payload) {
   const root = document.getElementById("clipboardFlyoutItems");
   if (!root) return;
-  root.innerHTML = "";
   const entries = payload?.entries || [];
-  const selectedItemIndex = typeof payload?.selectedItemIndex === "number" ? payload.selectedItemIndex : -1;
 
   if (!entries.length) {
     const empty = document.createElement("div");
     empty.className = "clip-flyout-empty";
     empty.textContent = "No clips in this group yet.";
     root.appendChild(empty);
-    reportFlyoutHeight();
     return;
   }
 
-  entries.forEach((entry, i) => {
+  entries.forEach((entry) => {
     const div = document.createElement("div");
     div.className = "clip-flyout-item";
     div.setAttribute("role", "listitem");
-    if (i === selectedItemIndex) div.classList.add("selected");
     div.innerHTML = `<div class="clip-flyout-text">${escapeHtml(entry.text)}</div><div class="meta">${formatTime(entry.copiedAt)}</div>`;
     div.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -64,22 +48,22 @@ function render(payload) {
     });
     root.appendChild(div);
   });
-
-  requestAnimationFrame(() => {
-    const sel = root.querySelector(".clip-flyout-item.selected");
-    if (sel) sel.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  });
-
-  reportFlyoutHeight();
 }
 
+const listView = new FlyoutList(
+  document.getElementById("clipboardFlyoutItems"), buildCards, reportFlyoutHeight,
+);
+// Keep the viewport constrained throughout navigation and content measurement.
+document.documentElement.classList.add("flyout-sized");
+window.addEventListener("resize", () => listView.revealSelection());
+
 api.onClipboardFlyoutRender((payload) => {
-  render(payload);
+  listView.render(payload);
 });
 
 if (api.onClipboardFlyoutSized) {
   api.onClipboardFlyoutSized(() => {
-    document.documentElement.classList.add("flyout-sized");
+    listView.revealSelection();
   });
 }
 
@@ -88,6 +72,25 @@ api.onThemeChange(({ effective }) => {
     document.documentElement.dataset.theme = effective;
   }
 });
+
+// Throttled heartbeat so the main process knows this window is in use.
+let lastInteractionSentAt = 0;
+for (const evt of ["mousemove", "mousedown", "wheel"]) {
+  document.addEventListener(
+    evt,
+    () => {
+      const now = Date.now();
+      if (now - lastInteractionSentAt < 200) return;
+      lastInteractionSentAt = now;
+      try {
+        api.reportInteraction?.();
+      } catch (_) {
+        // ignore
+      }
+    },
+    { passive: true },
+  );
+}
 
 const flyoutRoot = document.getElementById("flyoutRoot");
 if (flyoutRoot) {

@@ -11,13 +11,59 @@ const {
   screen,
   Notification,
   powerMonitor,
+  systemPreferences,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { execFileSync } = require("child_process");
+const { execFile, execFileSync } = require("child_process");
 const AutoLaunch = require("auto-launch");
 
+const { groupName, groupTemplatesStable, limitTemplates, reorderTemplates } = require("./template-order");
+
+const { createLifecycleLog, errorMetadata } = require("./lifecycle-log");
+let lifecycleLog = () => {};
+try {
+  lifecycleLog = createLifecycleLog(path.join(app.getPath("logs"), "lifecycle.log"));
+} catch (_) { /* Logging is best-effort, including before app readiness. */ }
+let quitReason = "external-or-system-request";
+function quitApp(reason) {
+  quitReason = reason;
+  lifecycleLog("quit-requested", { reason });
+  app.quit();
+}
+lifecycleLog("started", { version: app.getVersion?.() });
+// Observe fatal errors without suppressing Electron/Node's normal error handling.
+process.on?.("uncaughtExceptionMonitor", error => lifecycleLog("uncaught-exception", errorMetadata(error)));
+process.on?.("exit", code => lifecycleLog("process-exit", { code, reason: quitReason }));
+app.on("before-quit", () => lifecycleLog("before-quit", { reason: quitReason }));
+app.on("child-process-gone", (_event, details) => lifecycleLog("child-process-gone", {
+  type: details.type, reason: details.reason, exitCode: details.exitCode,
+}));
+
+// This is a menu-bar app: replacing or recovering its last popup must not quit
+// the process. Explicit Quit / Cmd+Q and system shutdown still work normally.
+app.on("window-all-closed", () => lifecycleLog("all-windows-closed-kept-alive"));
+
 const APP_NAME = "ClipNinja";
+// Stable across builds so macOS can restore the user's menu-bar placement.
+const TRAY_GUID = "65db66af-6d43-4a52-b8dd-9cd0619d9080";
+
+/**
+ * A second copy (login item + manual launch, or a stale process after a crash) fights the first one
+ * for the global shortcuts, so only the first instance is allowed to run.
+ */
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  quitApp("duplicate-instance");
+}
+
+/**
+ * Long-running menu-bar app: Chromium throttles timers and stops producing frames for hidden or
+ * occluded windows, which after days of uptime leaves the overlay alive but never repainted.
+ */
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 // Must stay in sync with template textarea maxlength in src/renderer/index.html (saved clips + paste).
 const MAX_TEXT_CHARS = 25000;
 const MAX_TODO_TEXT = 500;
@@ -31,12 +77,15 @@ const QUICK_TODO_PANEL_WIDTH = QUICK_TODO_PANEL_HEIGHT * 8;
 const TODOS_TODAY_PANEL_WIDTH = 340;
 const TODOS_TODAY_PANEL_HEIGHT = 420;
 /** Cmd+Shift+V / Cmd+Shift+B (compact): group list only; items pane is a separate adjacent window */
-const CLIPBOARD_COMPACT_MAIN_WIDTH = 140;
+const CLIPBOARD_COMPACT_MAIN_WIDTH = 208;
 /** Secondary window (clipboard clips + SavedClip items); shared width for both. */
-const CLIPBOARD_COMPACT_FLYOUT_WIDTH = 228;
+const CLIPBOARD_COMPACT_FLYOUT_WIDTH = 320;
 /** Until renderer reports measured height */
 const CLIPBOARD_COMPACT_MIN_HEIGHT = 96;
 const CLIPBOARD_COMPACT_MAX_HEIGHT = 560;
+/** Used when the renderer never reports its measured height (see startCompactSizingWatchdog). */
+const COMPACT_FALLBACK_HEIGHT = 320;
+const COMPACT_SIZING_TIMEOUT_MS = 500;
 const CLIPBOARD_FLYOUT_GAP = 6;
 const LIMIT_MAX_GROUPS = 20;
 const LIMIT_MAX_PER_GROUP = 20;
@@ -50,6 +99,14 @@ const DEFAULT_SETTINGS = Object.freeze({
   /** Open today's todo panel after macOS login / unlock (default on). */
   openTodosTodayOnLogin: true,
 });
+
+/** CLIPNINJA_DEBUG=1 traces panel show/dismiss decisions — the only way to diagnose the
+ *  "it went weird after a few days" class of bug without reproducing the wait. */
+const DEBUG = String(process.env.CLIPNINJA_DEBUG || "") === "1";
+
+function debugLog(...args) {
+  if (DEBUG) console.log("[ClipNinja]", ...args);
+}
 
 let store = null;
 
@@ -87,7 +144,10 @@ let overlayNavEnabled = false;
 let overlayNavRegistered = false;
 let overlayNavEnabledAt = 0;
 
-const OVERLAY_NAV_ACCELS = ["Up", "Down", "Left", "Right", "Escape", "Enter", "Return", "E"];
+// NOTE: only keys that are meaningless on their own are grabbed globally. A plain letter (we used to
+// register "E") is swallowed system-wide for as long as the overlay is up, so it is handled in the
+// renderer instead, where it only fires when the panel really has focus.
+const OVERLAY_NAV_ACCELS = ["Up", "Down", "Left", "Right", "Escape", "Enter", "Return"];
 
 function sendOverlayNavKey(key) {
   if (!overlayNavEnabled || !overlayNavRegistered) return;
@@ -97,6 +157,7 @@ function sendOverlayNavKey(key) {
   }
   if (currentMode !== "clipboard" && currentMode !== "templates") return;
   const k = String(key || "");
+  notePanelInteraction();
   // Ignore Enter briefly after registering so a queued/repeated key cannot paste into the front app.
   if (k === "Enter" && Date.now() - overlayNavEnabledAt < 280) return;
   try {
@@ -135,7 +196,6 @@ function enableOverlayNavShortcuts() {
     ["Escape", "Escape"],
     ["Enter", "Enter"],
     ["Return", "Enter"],
-    ["E", "E"],
   ];
   let okAny = false;
   for (const [accel, key] of bindings) {
@@ -150,14 +210,45 @@ function enableOverlayNavShortcuts() {
   if (okAny) overlayNavEnabledAt = Date.now();
 }
 let currentMode = "clipboard"; // 'clipboard' | 'templates' | 'todos' | 'settings' | 'todoQuickAdd' | 'todosToday'
-let uiUpdatePending = null;
+let panelSession = 0;
+let panelCompact = false;
+let panelCreatedAt = 0;
+let panelAnchor = null;
+const MAX_IDLE_WINDOW_AGE_MS = 6 * 60 * 60 * 1000;
+const { createWindowDelivery, clampToWorkArea } = require("./panel-lifecycle");
+const windowDelivery = createWindowDelivery();
+
+function retirePanelWindows(reason) {
+  lifecycleLog("retire-popup-windows", { reason });
+  hideAllPanels(reason);
+  for (const win of [panelWindow, clipboardFlyoutWindow, templatesFlyoutWindow]) {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+}
+
+function watchRenderer(win) {
+  const recover = () => {
+    if (win.isDestroyed()) return;
+    // Release global navigation immediately; rebuild lazily on the next shortcut.
+    // Do not loop on a renderer that repeatedly crashes at startup.
+    retirePanelWindows("renderer-failed");
+  };
+  win.webContents.on("render-process-gone", (_event, details) => {
+    lifecycleLog("renderer-process-gone", { reason: details.reason, exitCode: details.exitCode });
+    recover();
+  });
+  win.on("unresponsive", () => {
+    lifecycleLog("renderer-unresponsive");
+    recover();
+  });
+}
 
 /** macOS: unix PID of the app that was frontmost when a global shortcut opened the panel (for paste target). */
 let lastFrontmostPid = null;
+let pendingPasteTarget = null;
 
 /**
- * macOS: last PID seen as frontmost that is not ClipNinja (polled). Sync capture often sees Electron
- * because the global shortcut can activate this app before we query System Events.
+ * macOS: last foreign frontmost PID (polled), used if a shortcut lookup times out.
  */
 let lastSeenForeignFrontmostPid = null;
 let frontmostPollInterval = null;
@@ -220,6 +311,7 @@ function runOsascriptSync(args) {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 1024 * 1024,
+      timeout: 1500,
     });
     return { ok: true, stdout: String(stdout || "") };
   } catch (e) {
@@ -240,34 +332,43 @@ function runOsascriptSync(args) {
   }
 }
 
+let frontmostPollBusy = false;
 function tickMacFrontmostPoll() {
-  if (process.platform !== "darwin") return;
-  const r = runOsascriptSync(["-e", 'tell application "System Events" to get unix id of first process whose frontmost is true']);
-  if (!r.ok) return;
-  const pid = parseInt(String(r.stdout).trim(), 10);
-  if (Number.isFinite(pid) && pid !== process.pid) {
-    lastSeenForeignFrontmostPid = pid;
-  }
+  if (process.platform !== "darwin" || frontmostPollBusy) return;
+  frontmostPollBusy = true;
+  // A slow System Events service must not block window painting or shortcut handling.
+  execFile("osascript", ["-e", 'tell application "System Events" to get unix id of first process whose frontmost is true'],
+    { encoding: "utf8", timeout: 1200 }, (error, stdout) => {
+      frontmostPollBusy = false;
+      if (error) return;
+      const pid = parseInt(String(stdout).trim(), 10);
+      if (Number.isFinite(pid) && pid !== process.pid) lastSeenForeignFrontmostPid = pid;
+    });
 }
 
-function captureFrontmostPidSync() {
-  if (process.platform !== "darwin") {
-    lastFrontmostPid = null;
-    return;
-  }
-  const r = runOsascriptSync(["-e", 'tell application "System Events" to get unix id of first process whose frontmost is true']);
-  let target = null;
-  if (r.ok) {
-    const pid = parseInt(String(r.stdout).trim(), 10);
-    if (Number.isFinite(pid) && pid !== process.pid) {
-      target = pid;
-      lastSeenForeignFrontmostPid = pid;
-    }
-  }
-  if (target == null) {
-    target = lastSeenForeignFrontmostPid;
-  }
-  lastFrontmostPid = target;
+function captureFrontmostPid() {
+  if (process.platform !== "darwin") return;
+  const session = panelSession;
+  const fallback = lastSeenForeignFrontmostPid;
+  lastFrontmostPid = fallback;
+  // Shortcut panels show inactive, so the target stays frontmost while this runs.
+  // Never block Electron's UI thread on System Events (which can stall after wake).
+  const request = new Promise(resolve => {
+    execFile("osascript", ["-e", 'tell application "System Events" to get unix id of first process whose frontmost is true'],
+      { encoding: "utf8", timeout: 1200 }, (error, stdout) => {
+        const pid = error ? NaN : Number(String(stdout).trim());
+        resolve(Number.isInteger(pid) && pid > 0 && pid !== process.pid ? pid : fallback);
+      });
+  });
+  pendingPasteTarget = request;
+  request.then(pid => {
+    // A late result must not change the destination of a newer popup/editor.
+    if (session !== panelSession || pendingPasteTarget !== request) return;
+    pendingPasteTarget = null;
+    lastFrontmostPid = pid;
+    if (pid) lastSeenForeignFrontmostPid = pid;
+    if (panelWatchState) panelWatchState.ownerPid = pid;
+  });
 }
 
 function isFrontmostAppFullScreenSync() {
@@ -396,6 +497,8 @@ function ensurePngIconExists() {
   const pngPath = path.join(__dirname, "..", "..", "assets", "icon.png");
 
   if (fs.existsSync(pngPath)) return pngPath;
+  // Inside a packaged .app the bundle is read-only, so there is nothing to generate.
+  if (app.isPackaged || !fs.existsSync(svgPath)) return pngPath;
 
   try {
     console.log("Generating tray/Dock icon.png from icon.svg via sips...");
@@ -416,70 +519,14 @@ function sanitizeForMenuLabel(s) {
   return oneLine.length > 60 ? `${oneLine.slice(0, 57)}...` : oneLine;
 }
 
+/** Native template assets stay sharp and adapt to light/dark menu bars. */
 function loadTrayIconBase() {
   if (trayIconBase && !trayIconBase.isEmpty()) return trayIconBase;
-
-  const pngPath = ensurePngIconExists();
-  let icon = nativeImage.createFromPath(pngPath);
-
-  if (!icon || icon.isEmpty()) {
-    const svgPath = path.join(__dirname, "..", "..", "assets", "icon.svg");
-    const svgText = fs.readFileSync(svgPath, "utf8");
-    icon = createNativeImageFromSvg(svgText);
-  }
-
-  if (!icon || icon.isEmpty()) return null;
+  const icon = nativeImage.createFromPath(path.join(__dirname, "..", "..", "assets", "trayTemplate.png"));
+  if (icon.isEmpty()) return null;
+  icon.setTemplateImage(true);
   trayIconBase = icon;
-  return trayIconBase;
-}
-
-const TRAY_ICON_LOGICAL_PX = 22;
-/** Menu-bar icon scale (1 = full; 0.8 = 80% of current rendered size). */
-const TRAY_ICON_MENU_SCALE = 0.8;
-/** Badge dot scale relative to the previous dot size. */
-const TRAY_BADGE_DOT_SCALE = 0.5;
-
-function getTrayDisplayScaleFactor() {
-  return screen.getPrimaryDisplay().scaleFactor || 1;
-}
-
-function getTrayIconPixelSize() {
-  const scaled = TRAY_ICON_LOGICAL_PX * TRAY_ICON_MENU_SCALE;
-  return Math.max(Math.round(scaled), Math.round(scaled * getTrayDisplayScaleFactor()));
-}
-
-function setBitmapPixel(buffer, width, height, x, y, r, g, b, a) {
-  if (x < 0 || y < 0 || x >= width || y >= height) return;
-  const i = (y * width + x) * 4;
-  buffer[i] = b;
-  buffer[i + 1] = g;
-  buffer[i + 2] = r;
-  buffer[i + 3] = a;
-}
-
-function paintDotOnBitmap(buffer, width, height, cx, cy, radius, rgb) {
-  const [r, g, b] = rgb;
-  const r2 = radius * radius;
-  const ring = Math.max(0.6, radius * 0.35);
-  const outerR = radius + ring;
-  const y0 = Math.max(0, Math.floor(cy - outerR));
-  const y1 = Math.min(height - 1, Math.ceil(cy + outerR));
-  const x0 = Math.max(0, Math.floor(cx - outerR));
-  const x1 = Math.min(width - 1, Math.ceil(cx + outerR));
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const dx = x - cx + 0.5;
-      const dy = y - cy + 0.5;
-      const dist2 = dx * dx + dy * dy;
-      if (dist2 <= outerR * outerR) {
-        if (dist2 <= r2) {
-          setBitmapPixel(buffer, width, height, x, y, r, g, b, 255);
-        } else {
-          setBitmapPixel(buffer, width, height, x, y, 255, 255, 255, 220);
-        }
-      }
-    }
-  }
+  return icon;
 }
 
 function getTodoTrayBadgeState() {
@@ -495,39 +542,13 @@ function getTodoTrayBadgeState() {
   return { hasTodayRemaining, hasPastRemaining };
 }
 
-function trayImageFromBitmapBuffer(buf, width, height) {
-  // scaleFactor 1: use full pixel buffer in the menu bar (matches pre-badge icon size on Retina).
-  return nativeImage.createFromBitmap(buf, { width, height, scaleFactor: 1 });
-}
-
 function buildTrayImageWithBadges(hasTodayRemaining, hasPastRemaining) {
-  const base = loadTrayIconBase();
-  if (!base) return null;
-
-  const size = getTrayIconPixelSize();
-  const img = base.resize({ width: size, height: size });
-  const { width, height } = img.getSize();
-  const buf = Buffer.from(img.toBitmap());
-  if (buf.length < width * height * 4) {
-    return trayImageFromBitmapBuffer(buf, width, height);
-  }
-
-  if (hasPastRemaining || hasTodayRemaining) {
-    const dotR = Math.max(2, Math.round(size * 0.065 * TRAY_BADGE_DOT_SCALE));
-    // Sit on the artwork corners (icon PNG has transparent top/side padding in the tray bitmap).
-    const dotCy = Math.min(height - dotR - 1, Math.round(height * 0.2) + dotR);
-    const dotCxLeft = dotR;
-    const dotCxRight = width - dotR;
-
-    if (hasPastRemaining) {
-      paintDotOnBitmap(buf, width, height, dotCxLeft, dotCy, dotR, [0, 122, 255]);
-    }
-    if (hasTodayRemaining) {
-      paintDotOnBitmap(buf, width, height, dotCxRight, dotCy, dotR, [48, 209, 88]);
-    }
-  }
-
-  return trayImageFromBitmapBuffer(buf, width, height);
+  if (!hasTodayRemaining && !hasPastRemaining) return loadTrayIconBase();
+  const state = hasTodayRemaining && hasPastRemaining ? "both" : hasTodayRemaining ? "today" : "overdue";
+  const icon = nativeImage.createFromPath(path.join(__dirname, "..", "..", "assets", `tray-${state}Template.png`));
+  if (icon.isEmpty()) return loadTrayIconBase();
+  icon.setTemplateImage(true);
+  return icon;
 }
 
 function refreshTrayIcon() {
@@ -539,7 +560,7 @@ function refreshTrayIcon() {
 
     let tip = APP_NAME;
     if (hasTodayRemaining) tip += " — tasks due today";
-    else if (hasPastRemaining) tip += " — overdue tasks";
+    if (hasPastRemaining) tip += " — overdue tasks";
     tray.setToolTip(tip);
   } catch (e) {
     console.error("Failed to update tray icon badges:", e);
@@ -654,7 +675,7 @@ function buildTrayMenu() {
     { type: "separator" },
     {
       label: "Quit",
-      click: () => app.quit(),
+      click: () => quitApp("tray-menu"),
     },
   ]);
 }
@@ -671,8 +692,8 @@ function setDockIcon() {
 
     // Fallback so Dock icon is never missing.
     const svgPath = path.join(__dirname, "..", "..", "assets", "icon.svg");
-    const svgText = fs.readFileSync(svgPath, "utf8");
-    const svgImg = createNativeImageFromSvg(svgText);
+    if (!fs.existsSync(svgPath)) return;
+    const svgImg = createNativeImageFromSvg(fs.readFileSync(svgPath, "utf8"));
     if (svgImg && !svgImg.isEmpty()) app.dock.setIcon(svgImg.resize({ width: 64, height: 64 }));
   } catch (e) {
     console.error("Failed to set Dock icon:", e);
@@ -731,7 +752,7 @@ function getEffectiveTheme() {
 }
 
 function panelBackgroundHex() {
-  return getEffectiveTheme() === "light" ? "#f4f6fa" : "#0b0f17";
+  return getEffectiveTheme() === "light" ? "#eef1f8" : "#080b13";
 }
 
 function sendThemeToPanel() {
@@ -791,31 +812,7 @@ function getMaxClipboardItems(settings = getSettings()) {
 }
 
 function enforceSavedClipLimits(templates, settings = getSettings()) {
-  const byGroup = new Map();
-  for (const t of templates || []) {
-    const g = (t.group || "").trim() || "General";
-    if (!byGroup.has(g)) byGroup.set(g, []);
-    byGroup.get(g).push(t);
-  }
-
-  for (const [g, list] of byGroup.entries()) {
-    list.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
-    byGroup.set(g, list.slice(0, settings.savedPerGroup));
-  }
-
-  const groupsSorted = Array.from(byGroup.entries()).sort((a, b) => {
-    const aNewest = a[1]?.[0];
-    const bNewest = b[1]?.[0];
-    const aTs = aNewest ? aNewest.updatedAt || aNewest.createdAt || 0 : 0;
-    const bTs = bNewest ? bNewest.updatedAt || bNewest.createdAt || 0 : 0;
-    return bTs - aTs;
-  });
-
-  const allowed = groupsSorted.slice(0, settings.savedGroupsMax);
-  const flattened = [];
-  for (const [, list] of allowed) flattened.push(...list);
-  flattened.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
-  return flattened;
+  return limitTemplates(templates, settings);
 }
 
 function setSettings(partial) {
@@ -873,7 +870,7 @@ function cryptoRandomId() {
 }
 
 function getTemplates() {
-  return store.get("templates", []);
+  return groupTemplatesStable(store.get("templates", [])).flatMap(g => g.items);
 }
 
 function setTemplates(templates) {
@@ -936,20 +933,11 @@ function setTodos(todos) {
 }
 
 function groupTemplates(templates) {
-  const groups = new Map();
-  for (const t of templates) {
-    const g = (t.group || "").trim() || "General";
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(t);
-  }
-  for (const g of groups.keys()) {
-    groups.get(g).sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt));
-  }
-  return Array.from(groups.entries()).map(([group, items]) => ({ group, items }));
+  return groupTemplatesStable(templates);
 }
 
 function createPanelWindow() {
-  if (panelWindow) return panelWindow;
+  if (panelWindow && !panelWindow.isDestroyed()) return panelWindow;
 
   let windowIcon = undefined;
   try {
@@ -977,37 +965,29 @@ function createPanelWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.js"),
+      // The panel spends most of its life hidden; without this Chromium freezes its timers and
+      // rAF callbacks, so the layout/measure pass that sizes the overlay never runs.
+      backgroundThrottling: false,
     },
   });
 
-  // Float above normal windows (cannot draw inside other apps — this mimics a lightweight overlay).
-  if (process.platform === "darwin") {
-    try {
-      panelWindow.setAlwaysOnTop(true, "floating");
-      panelWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    } catch (_) {
-      panelWindow.setAlwaysOnTop(true);
-    }
-  }
-
-  panelWindow.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
-  panelWindow.webContents.once("did-finish-load", () => {
-    sendThemeToPanel();
-    if (uiUpdatePending) {
-      panelWindow.webContents.send("ui:update", uiUpdatePending);
-      uiUpdatePending = null;
-    }
+  const win = panelWindow;
+  panelCreatedAt = Date.now();
+  reassertMacWindowLevel(win);
+  windowDelivery.attach(win);
+  watchRenderer(win);
+  win.webContents.on("did-finish-load", sendThemeToPanel);
+  win.on("closed", () => {
+    if (panelWindow === win) panelWindow = null;
   });
-
-  panelWindow.on("closed", () => {
-    panelWindow = null;
-  });
+  win.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
 
   panelWindow.on("blur", () => {
     onPanelOrFlyoutBlur();
   });
 
   panelWindow.on("hide", () => {
+    stopPanelDismissWatch();
     disableOverlayNavShortcuts();
   });
 
@@ -1015,6 +995,7 @@ function createPanelWindow() {
 }
 
 function hideClipboardFlyoutWindow() {
+  windowDelivery.cancel(clipboardFlyoutWindow);
   clipboardFlyoutPeerHoverMain = false;
   if (clipboardFlyoutWindow && !clipboardFlyoutWindow.isDestroyed()) {
     try {
@@ -1026,6 +1007,7 @@ function hideClipboardFlyoutWindow() {
 }
 
 function hideTemplatesFlyoutWindow() {
+  windowDelivery.cancel(templatesFlyoutWindow);
   templatesFlyoutPeerHoverMain = false;
   if (templatesFlyoutWindow && !templatesFlyoutWindow.isDestroyed()) {
     try {
@@ -1063,7 +1045,7 @@ function isSettingsPanelSticky() {
 }
 
 function hidePanelAndFlyoutsIfNoFocus() {
-  if (isSettingsPanelSticky()) return;
+  if (isSettingsPanelSticky() || panelWatchState?.pinned) return;
 
   const focused = BrowserWindow.getFocusedWindow();
   if (isOurPanelOrFlyoutWindow(focused)) return;
@@ -1090,11 +1072,13 @@ function hidePanelAndFlyoutsIfNoFocus() {
       // ignore
     }
   }
+  stopPanelDismissWatch();
   disableOverlayNavShortcuts();
+  debugLog("hidePanelAndFlyoutsIfNoFocus: dismissed on blur");
 }
 
 function scheduleHidePanelIfLostFocus() {
-  if (isSettingsPanelSticky()) return;
+  if (isSettingsPanelSticky() || panelWatchState?.pinned) return;
   cancelPendingPanelBlurDismiss();
   hidePanelBlurTimer = setTimeout(() => {
     hidePanelBlurTimer = null;
@@ -1129,6 +1113,248 @@ function setupPanelBlurDismiss() {
   });
 }
 
+/** Handle an explicit macOS Hide command; ordinary paste only hides our windows. */
+function macUnhideApp() {
+  if (process.platform === "darwin" && app.isHidden()) app.show();
+}
+
+/** Re-apply float level + all-Spaces behaviour; both can be lost across sleep / display changes. */
+function reassertMacWindowLevel(win) {
+  if (process.platform !== "darwin" || !win || win.isDestroyed()) return;
+  try {
+    win.setAlwaysOnTop(true, "floating");
+    win.setVisibleOnAllWorkspaces(true, {
+      visibleOnFullScreen: true,
+      // Packaged ClipNinja is LSUIElement; dev Electron needs the initial conversion.
+      skipTransformProcessType: app.isPackaged,
+    });
+  } catch (_) {
+    try {
+      win.setAlwaysOnTop(true);
+    } catch (_) {
+      // ignore
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Dismiss watchdog
+ *
+ * The shortcut overlay is shown with showInactive() so the app you were typing
+ * in stays frontmost. That window never becomes key, so it never emits "blur"
+ * and the blur-based dismissal above can never run — clicking elsewhere left
+ * the panel on screen indefinitely (and, with it, the global arrow/Enter grab).
+ * This poll is the safety net: it dismisses on app switch, on the pointer
+ * leaving the panel, and on plain inactivity.
+ * ------------------------------------------------------------------ */
+
+const PANEL_WATCH_INTERVAL_MS = 250;
+/** Ignore everything right after opening so the panel cannot dismiss itself instantly. */
+const PANEL_WATCH_GRACE_MS = 700;
+/** Pointer must be this far outside the panel before the "moved away" timer starts. */
+const PANEL_CURSOR_MARGIN_PX = 48;
+/** How long a focus-seeking panel gets to actually become key before we stop trusting "blur". */
+const PANEL_FOCUS_GRACE_MS = 2500;
+const PANEL_UNFOCUSED_CURSOR_AWAY_MS = 4000;
+
+/**
+ * Two idle budgets per panel:
+ *   idleMs          — the panel has held focus at some point, so "click elsewhere" reaches us as a
+ *                     blur and the timer is only a long backstop.
+ *   unfocusedIdleMs — the panel was shown inactive and never became key. macOS gives us no way to
+ *                     see a click that lands in another app, so an untouched overlay has to time
+ *                     itself out; this is deliberately short.
+ */
+const PANEL_WATCH_PROFILES = {
+  clipboard: { cursorAwayMs: 1200, unfocusedIdleMs: 8000, idleMs: 30000 },
+  templates: { cursorAwayMs: 1200, unfocusedIdleMs: 8000, idleMs: 30000 },
+  // Typing panels: the pointer is irrelevant while they have focus.
+  todoQuickAdd: { cursorAwayMs: 0, unfocusedIdleMs: 8000, idleMs: 60000 },
+  todosToday: { cursorAwayMs: 0, unfocusedIdleMs: 15000, idleMs: 120000 },
+  todos: { cursorAwayMs: 0, unfocusedIdleMs: 30000, idleMs: 300000 },
+  info: { cursorAwayMs: 0, unfocusedIdleMs: 30000, idleMs: 300000 },
+};
+
+let panelWatchTimer = null;
+let panelWatchState = null;
+
+function anyPanelWindowVisible() {
+  const vis = (w) => !!w && !w.isDestroyed() && w.isVisible();
+  return vis(panelWindow) || vis(clipboardFlyoutWindow) || vis(templatesFlyoutWindow);
+}
+
+/** Union of the visible panel + flyout rectangles, or null when nothing is on screen. */
+function visiblePanelUnionBounds() {
+  let union = null;
+  for (const w of [panelWindow, clipboardFlyoutWindow, templatesFlyoutWindow]) {
+    if (!w || w.isDestroyed() || !w.isVisible()) continue;
+    const b = w.getBounds();
+    if (!union) {
+      union = { ...b };
+      continue;
+    }
+    const right = Math.max(union.x + union.width, b.x + b.width);
+    const bottom = Math.max(union.y + union.height, b.y + b.height);
+    union.x = Math.min(union.x, b.x);
+    union.y = Math.min(union.y, b.y);
+    union.width = right - union.x;
+    union.height = bottom - union.y;
+  }
+  return union;
+}
+
+function pointInBounds(point, bounds, margin) {
+  return (
+    point.x >= bounds.x - margin &&
+    point.x <= bounds.x + bounds.width + margin &&
+    point.y >= bounds.y - margin &&
+    point.y <= bounds.y + bounds.height + margin
+  );
+}
+
+/** Any keystroke / pointer activity in the panel postpones every automatic dismissal. */
+function notePanelInteraction() {
+  if (!panelWatchState) return;
+  panelWatchState.lastInteractionAt = Date.now();
+  panelWatchState.cursorAwaySince = 0;
+}
+
+/**
+ * Pinned while the renderer has an editor open: no timer may close the panel out from under
+ * someone who is halfway through typing a snippet.
+ */
+function setPanelAutoDismissEnabled(enabled) {
+  if (!panelWatchState) return;
+  panelWatchState.pinned = !enabled;
+  if (!enabled) cancelPendingPanelBlurDismiss();
+  if (enabled) notePanelInteraction();
+  debugLog("auto-dismiss", enabled ? "enabled" : "pinned open");
+}
+
+function hideAllPanels(reason = "explicit") {
+  debugLog("hideAllPanels:", reason);
+  panelSession += 1;
+  pendingPasteTarget = null;
+  panelCompact = false;
+  windowDelivery.cancel(panelWindow);
+  clearTimeout(compactSizingWatchdogTimer);
+  clearTimeout(flyoutSizingWatchdogTimer);
+  cancelPendingPanelBlurDismiss();
+  stopPanelDismissWatch();
+  hideClipboardFlyoutWindow();
+  hideTemplatesFlyoutWindow();
+  if (panelWindow && !panelWindow.isDestroyed() && panelWindow.isVisible()) {
+    try {
+      panelWindow.hide();
+    } catch (_) {
+      // ignore
+    }
+  }
+  overlayNavEnabled = false;
+  disableOverlayNavShortcuts();
+}
+
+function stopPanelDismissWatch() {
+  if (panelWatchTimer) {
+    clearInterval(panelWatchTimer);
+    panelWatchTimer = null;
+  }
+  panelWatchState = null;
+}
+
+function startPanelDismissWatch(mode) {
+  stopPanelDismissWatch();
+  // Settings is deliberately sticky: it stays up until the user closes it.
+  if (mode === "settings") return;
+  const profile = PANEL_WATCH_PROFILES[mode];
+  if (!profile) return;
+
+  const now = Date.now();
+  panelWatchState = {
+    mode,
+    openedAt: now,
+    lastInteractionAt: now,
+    cursorAwaySince: 0,
+    everFocused: false,
+    pinned: false,
+    lastCursorPoint: null,
+    ownerPid: lastSeenForeignFrontmostPid,
+    ...profile,
+  };
+  panelWatchTimer = setInterval(panelDismissTick, PANEL_WATCH_INTERVAL_MS);
+}
+
+function panelDismissTick() {
+  // Nothing on screen: make sure the global arrow/Enter grab is not left behind.
+  if (!anyPanelWindowVisible()) {
+    stopPanelDismissWatch();
+    disableOverlayNavShortcuts();
+    return;
+  }
+  if (isSettingsPanelSticky()) return;
+
+  const st = panelWatchState;
+  if (!st || st.pinned) return;
+  const now = Date.now();
+  if (now - st.openedAt < PANEL_WATCH_GRACE_MS) return;
+
+  // While one of our windows holds focus the normal blur path is in charge.
+  const focused = BrowserWindow.getFocusedWindow();
+  if (isOurPanelOrFlyoutWindow(focused)) {
+    st.everFocused = true;
+    st.lastInteractionAt = now;
+    st.cursorAwaySince = 0;
+    return;
+  }
+
+  // A panel that asked for focus but never got it (typically the post-login todo panel, opened
+  // while macOS is still settling) can never emit "blur", so fall back to pointer-away dismissal.
+  if (st.cursorAwayMs === 0 && !st.everFocused && now - st.openedAt > PANEL_FOCUS_GRACE_MS) {
+    st.cursorAwayMs = PANEL_UNFOCUSED_CURSOR_AWAY_MS;
+  }
+
+  // The user moved to another app (click, Cmd+Tab, Spaces).
+  if (!pendingPasteTarget && st.ownerPid && lastSeenForeignFrontmostPid && lastSeenForeignFrontmostPid !== st.ownerPid) {
+    hideAllPanels("frontmost-app-changed");
+    return;
+  }
+
+  let point = null;
+  try {
+    point = screen.getCursorScreenPoint();
+  } catch (_) {
+    point = null;
+  }
+
+  if (point) {
+    const union = visiblePanelUnionBounds();
+    const inside = !union || pointInBounds(point, union, PANEL_CURSOR_MARGIN_PX);
+    // The overlay opens under the pointer, so "pointer is inside" is the starting state and must
+    // not by itself count as activity — otherwise opening it and walking away never times out.
+    // Only actual movement does.
+    const moved =
+      !!st.lastCursorPoint && (st.lastCursorPoint.x !== point.x || st.lastCursorPoint.y !== point.y);
+    st.lastCursorPoint = point;
+
+    if (inside) {
+      st.cursorAwaySince = 0;
+      if (moved) st.lastInteractionAt = now;
+    } else if (st.cursorAwayMs > 0) {
+      if (!st.cursorAwaySince) {
+        st.cursorAwaySince = now;
+      } else if (now - st.cursorAwaySince >= st.cursorAwayMs) {
+        hideAllPanels("pointer-left-panel");
+        return;
+      }
+    }
+  }
+
+  const idleBudget = st.everFocused ? st.idleMs : st.unfocusedIdleMs;
+  if (idleBudget > 0 && now - st.lastInteractionAt >= idleBudget) {
+    hideAllPanels(st.everFocused ? "idle" : "untouched-overlay-timeout");
+  }
+}
+
 function positionClipboardFlyoutWindow() {
   if (!panelWindow || panelWindow.isDestroyed() || !clipboardFlyoutWindow || clipboardFlyoutWindow.isDestroyed()) {
     return;
@@ -1138,7 +1364,7 @@ function positionClipboardFlyoutWindow() {
   const fh = clipboardFlyoutWindow.getBounds().height;
   let left = b.x + b.width + CLIPBOARD_FLYOUT_GAP;
   let top = b.y;
-  const display = screen.getDisplayNearestPoint({ x: left, y: top });
+  const display = screen.getDisplayMatching(b);
   const wa = display.workArea;
   if (left + fw > wa.x + wa.width - 4) {
     left = b.x - CLIPBOARD_FLYOUT_GAP - fw;
@@ -1158,7 +1384,7 @@ function positionTemplatesFlyoutWindow() {
   const fh = templatesFlyoutWindow.getBounds().height;
   let left = b.x + b.width + CLIPBOARD_FLYOUT_GAP;
   let top = b.y;
-  const display = screen.getDisplayNearestPoint({ x: left, y: top });
+  const display = screen.getDisplayMatching(b);
   const wa = display.workArea;
   if (left + fw > wa.x + wa.width - 4) {
     left = b.x - CLIPBOARD_FLYOUT_GAP - fw;
@@ -1200,26 +1426,21 @@ function createClipboardFlyoutWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.js"),
+      // The panel spends most of its life hidden; without this Chromium freezes its timers and
+      // rAF callbacks, so the layout/measure pass that sizes the overlay never runs.
+      backgroundThrottling: false,
     },
   });
 
-  if (process.platform === "darwin") {
-    try {
-      clipboardFlyoutWindow.setAlwaysOnTop(true, "floating");
-      clipboardFlyoutWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    } catch (_) {
-      clipboardFlyoutWindow.setAlwaysOnTop(true);
-    }
-  }
-
-  clipboardFlyoutWindow.loadFile(path.join(__dirname, "..", "renderer", "clipboard-flyout.html"));
-  clipboardFlyoutWindow.webContents.once("did-finish-load", () => {
-    sendThemeToPanel();
+  const win = clipboardFlyoutWindow;
+  reassertMacWindowLevel(win);
+  windowDelivery.attach(win);
+  watchRenderer(win);
+  win.webContents.on("did-finish-load", sendThemeToPanel);
+  win.on("closed", () => {
+    if (clipboardFlyoutWindow === win) clipboardFlyoutWindow = null;
   });
-
-  clipboardFlyoutWindow.on("closed", () => {
-    clipboardFlyoutWindow = null;
-  });
+  win.loadFile(path.join(__dirname, "..", "renderer", "clipboard-flyout.html"));
 
   clipboardFlyoutWindow.on("blur", () => {
     onPanelOrFlyoutBlur();
@@ -1258,26 +1479,21 @@ function createTemplatesFlyoutWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, "preload.js"),
+      // The panel spends most of its life hidden; without this Chromium freezes its timers and
+      // rAF callbacks, so the layout/measure pass that sizes the overlay never runs.
+      backgroundThrottling: false,
     },
   });
 
-  if (process.platform === "darwin") {
-    try {
-      templatesFlyoutWindow.setAlwaysOnTop(true, "floating");
-      templatesFlyoutWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    } catch (_) {
-      templatesFlyoutWindow.setAlwaysOnTop(true);
-    }
-  }
-
-  templatesFlyoutWindow.loadFile(path.join(__dirname, "..", "renderer", "templates-flyout.html"));
-  templatesFlyoutWindow.webContents.once("did-finish-load", () => {
-    sendThemeToPanel();
+  const win = templatesFlyoutWindow;
+  reassertMacWindowLevel(win);
+  windowDelivery.attach(win);
+  watchRenderer(win);
+  win.webContents.on("did-finish-load", sendThemeToPanel);
+  win.on("closed", () => {
+    if (templatesFlyoutWindow === win) templatesFlyoutWindow = null;
   });
-
-  templatesFlyoutWindow.on("closed", () => {
-    templatesFlyoutWindow = null;
-  });
+  win.loadFile(path.join(__dirname, "..", "renderer", "templates-flyout.html"));
 
   templatesFlyoutWindow.on("blur", () => {
     onPanelOrFlyoutBlur();
@@ -1289,7 +1505,7 @@ function createTemplatesFlyoutWindow() {
 function positionPanelNearCursor() {
   if (!panelWindow) return;
   const { width, height } = panelWindow.getBounds();
-  const point = screen.getCursorScreenPoint();
+  const point = panelAnchor || screen.getCursorScreenPoint();
   const display = screen.getDisplayNearestPoint(point);
   const wa = display.workArea;
   let left = point.x + 12;
@@ -1316,11 +1532,27 @@ function positionPanelWindow(opts = {}) {
 }
 
 function ensurePanelVisible(mode, opts = {}) {
+  if (panelWindow && !panelWindow.isDestroyed() && !panelWindow.isVisible() &&
+      Date.now() - panelCreatedAt > MAX_IDLE_WINDOW_AGE_MS) {
+    retirePanelWindows("refresh-aged-native-windows");
+  }
+  const session = ++panelSession;
+  pendingPasteTarget = null;
+  panelCompact = !!opts.compact && (mode === "clipboard" || mode === "templates");
+  panelAnchor = opts.fromShortcut ? screen.getCursorScreenPoint() : null;
   currentMode = mode;
-  if (mode === "settings") cancelPendingPanelBlurDismiss();
+  cancelPendingPanelBlurDismiss();
+  // Only an explicit macOS Hide command needs app-level unhiding.
+  macUnhideApp();
   const win = createPanelWindow();
   const compact = !!opts.compact;
   const fromShortcut = !!opts.fromShortcut;
+  // Start loading the right pane alongside the main pane, including after recovery.
+  // Startup normally preloads both, so browsing a group never starts a renderer.
+  if (panelCompact) {
+    if (mode === "clipboard") createClipboardFlyoutWindow();
+    else createTemplatesFlyoutWindow();
+  }
 
   if (mode !== "clipboard") hideClipboardFlyoutWindow();
   if (mode !== "templates") hideTemplatesFlyoutWindow();
@@ -1357,6 +1589,7 @@ function ensurePanelVisible(mode, opts = {}) {
   }
 
   positionPanelWindow({ fromShortcut });
+  ensurePanelOnScreen();
   if (clipboardFlyoutWindow && !clipboardFlyoutWindow.isDestroyed() && clipboardFlyoutWindow.isVisible()) {
     positionClipboardFlyoutWindow();
   }
@@ -1368,8 +1601,11 @@ function ensurePanelVisible(mode, opts = {}) {
   const pasteOnClick =
     !!fromShortcut && (mode === "clipboard" || mode === "templates");
   const message = { mode, ...payload, compact, pasteOnClick };
-  if (win.webContents.isLoading()) uiUpdatePending = message;
-  else win.webContents.send("ui:update", message);
+  windowDelivery.send(win, "ui:update", message);
+
+  // Float level and the all-Spaces collection behaviour can be dropped across sleep and display
+  // changes; re-apply on every open so the panel cannot reappear on a Space you are not looking at.
+  reassertMacWindowLevel(win);
 
   if (!win.isVisible()) {
     // On macOS, activating this app can switch Spaces / steal focus (notably from Chrome).
@@ -1384,6 +1620,12 @@ function ensurePanelVisible(mode, opts = {}) {
     } else {
       win.show();
     }
+  } else {
+    try {
+      win.moveTop();
+    } catch (_) {
+      // ignore
+    }
   }
   // When shown inactive, the panel won't receive key events until clicked.
   const shouldAvoidActivation =
@@ -1393,7 +1635,7 @@ function ensurePanelVisible(mode, opts = {}) {
     typeof win.showInactive === "function";
   if (!shouldAvoidActivation) {
     // Focus must move to ClipNinja so arrow keys navigate the overlay; paste still targets the
-    // app captured in captureFrontmostPidSync() before this window was shown.
+    // app captured in captureFrontmostPid() when the shortcut opened this window.
     win.focus();
     try {
       win.webContents.focus();
@@ -1403,13 +1645,92 @@ function ensurePanelVisible(mode, opts = {}) {
     if (process.platform === "darwin" && typeof app.focus === "function") {
       app.focus({ steal: true });
     }
+    // Right after login/unlock macOS often refuses the first activation, and an unfocused panel
+    // never emits "blur" — so it could never be dismissed by clicking away. Retry a few times.
+    retryPanelFocus(win, 3, session);
   }
+  win.webContents.invalidate();
   enableOverlayNavShortcuts();
+  startCompactSizingWatchdog(mode, compact || fromShortcut);
+  startPanelDismissWatch(mode);
+  debugLog("panel shown:", mode, { fromShortcut, compact, bounds: win.getBounds(), focused: win.isFocused() });
+}
+
+function retryPanelFocus(win, attemptsLeft, session) {
+  if (attemptsLeft <= 0) return;
+  setTimeout(() => {
+    if (session !== panelSession || overlayNavEnabled) return;
+    if (!win || win.isDestroyed() || !win.isVisible()) return;
+    if (win.isFocused()) return;
+    try {
+      win.focus();
+      if (process.platform === "darwin" && typeof app.focus === "function") {
+        app.focus({ steal: true });
+      }
+    } catch (_) {
+      // ignore
+    }
+    retryPanelFocus(win, attemptsLeft - 1, session);
+  }, 400);
+}
+
+/**
+ * Compact overlays are sized by the renderer: it measures its content and reports a height back.
+ * If that round-trip never lands (a throttled or wedged renderer), the window is stuck at the 96px
+ * minimum with clipped content — the "messed up UI". Unlock it from here after a short wait.
+ */
+let compactSizingWatchdogTimer = null;
+let compactSizingReported = false;
+
+function noteCompactSizingReported() {
+  compactSizingReported = true;
+  if (compactSizingWatchdogTimer) {
+    clearTimeout(compactSizingWatchdogTimer);
+    compactSizingWatchdogTimer = null;
+  }
+}
+
+function startCompactSizingWatchdog(mode, compact) {
+  if (compactSizingWatchdogTimer) {
+    clearTimeout(compactSizingWatchdogTimer);
+    compactSizingWatchdogTimer = null;
+  }
+  if (!compact || (mode !== "clipboard" && mode !== "templates")) return;
+  compactSizingReported = false;
+  compactSizingWatchdogTimer = setTimeout(() => {
+    compactSizingWatchdogTimer = null;
+    if (compactSizingReported) return;
+    if (!panelWindow || panelWindow.isDestroyed() || !panelWindow.isVisible()) return;
+    debugLog("compact sizing watchdog fired — renderer never reported a height");
+    try {
+      panelWindow.setSize(CLIPBOARD_COMPACT_MAIN_WIDTH, COMPACT_FALLBACK_HEIGHT);
+      ensurePanelOnScreen();
+      panelWindow.webContents.send("clipboard-compact:main-sized");
+    } catch (_) {
+      // ignore
+    }
+  }, COMPACT_SIZING_TIMEOUT_MS);
+}
+
+/** Displays come and go (dock / undock); never leave the panel on coordinates nothing shows. */
+function ensurePanelOnScreen() {
+  if (!panelWindow || panelWindow.isDestroyed()) return;
+  try {
+    const b = panelWindow.getBounds();
+    const next = clampToWorkArea(b, screen.getDisplayMatching(b).workArea);
+    panelWindow.setBounds(next);
+
+  } catch (_) {
+    // ignore
+  }
 }
 
 function openTemplatesEditor(templateId) {
+  hideAllPanels("open-editor");
   currentMode = "templates";
   overlayNavEnabled = false;
+  stopPanelDismissWatch();
+  macUnhideApp();
   disableOverlayNavShortcuts();
   hideClipboardFlyoutWindow();
   hideTemplatesFlyoutWindow();
@@ -1417,6 +1738,7 @@ function openTemplatesEditor(templateId) {
   const win = createPanelWindow();
   win.setSize(480, 680);
   positionPanelWindow({ fromShortcut: false });
+  ensurePanelOnScreen();
 
   const payload = buildModePayload("templates");
   const message = {
@@ -1426,9 +1748,9 @@ function openTemplatesEditor(templateId) {
     pasteOnClick: false,
     editTemplateId: templateId || null,
   };
-  if (win.webContents.isLoading()) uiUpdatePending = message;
-  else win.webContents.send("ui:update", message);
+  windowDelivery.send(win, "ui:update", message);
 
+  reassertMacWindowLevel(win);
   if (!win.isVisible()) win.show();
   win.focus();
   try {
@@ -1450,10 +1772,11 @@ function buildModePayload(mode) {
   }
 
   if (mode === "templates") {
+    const templates = getTemplates();
     return {
-      templatesGrouped: groupTemplates(getTemplates()),
-      templatesFlat: flattenTemplatesForUI(getTemplates()),
-      templatesAll: getTemplates(),
+      templatesGrouped: groupTemplates(templates),
+      templatesFlat: flattenTemplatesForUI(templates),
+      templatesAll: templates,
       settings: getSettings(),
     };
   }
@@ -1492,24 +1815,19 @@ function buildModePayload(mode) {
 }
 
 function flattenTemplatesForUI(templates) {
-  // For keyboard navigation.
-  return templates
-    .slice()
-    .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt));
+  return groupTemplatesStable(templates).flatMap(g => g.items);
 }
 
 async function pasteText(text) {
   const normalized = normalizeText(text);
   if (!normalized) return;
 
-  disableOverlayNavShortcuts();
+  // Snapshot before hide invalidates the session. A fast Enter still uses the
+  // lookup belonging to this popup, even if another shortcut opens meanwhile.
+  const target = pendingPasteTarget || Promise.resolve(lastFrontmostPid);
+  hideAllPanels("paste");
 
-  if (panelWindow) {
-    panelWindow.hide();
-  }
-  hideClipboardFlyoutWindow();
-
-  const pid = lastFrontmostPid;
+  const pid = await target;
   const myPid = process.pid;
 
   // Keep suppression through hide/activate/paste so the poll cannot race with pasteboard contents.
@@ -1524,14 +1842,6 @@ async function pasteText(text) {
 
   if (process.platform === "darwin") {
     const safePid = pid != null && Number.isFinite(Number(pid)) ? parseInt(String(pid), 10) : null;
-
-    try {
-      if (typeof app.hide === "function") {
-        app.hide();
-      }
-    } catch (_) {
-      // ignore
-    }
 
     await new Promise((r) => setTimeout(r, 8));
 
@@ -1637,7 +1947,7 @@ function openTodosTodayOnLoginNow(reason) {
   if (now - lastOpenTodosTodayOnLoginAt < 2500) return;
   lastOpenTodosTodayOnLoginAt = now;
 
-  if (panelWindow && !panelWindow.isDestroyed() && panelWindow.isVisible() && currentMode === "todosToday") {
+  if (panelWindow && !panelWindow.isDestroyed() && panelWindow.isVisible()) {
     return;
   }
 
@@ -1663,6 +1973,49 @@ function setupOpenTodosTodayOnLoginWatchers() {
   powerMonitor.on("resume", () => {
     scheduleOpenTodosTodayOnLogin("resume");
   });
+}
+
+/**
+ * Sleep / lock / display changes are where this app used to drift out of shape: panels survive as
+ * invisible-but-live windows and the global arrow+Enter grab survives with them. Tear the UI down
+ * on the way out and rebuild the OS-level state on the way back in.
+ */
+function setupSystemStateWatchers() {
+  const teardown = () => {
+    if (openTodosTodayOnLoginTimer) {
+      clearTimeout(openTodosTodayOnLoginTimer);
+      openTodosTodayOnLoginTimer = null;
+    }
+    hideAllPanels("system-suspend-or-lock");
+  };
+
+  const restore = () => {
+    // Restore native window flags without activating the app after sleep.
+    ensureGlobalShortcutsRegistered(false);
+    for (const w of [panelWindow, clipboardFlyoutWindow, templatesFlyoutWindow]) {
+      reassertMacWindowLevel(w);
+    }
+    trayIconBase = null;
+    refreshTrayMenuIfReady();
+  };
+
+  try {
+    powerMonitor.on("suspend", teardown);
+    powerMonitor.on("lock-screen", teardown);
+    powerMonitor.on("resume", restore);
+    powerMonitor.on("unlock-screen", restore);
+  } catch (_) {
+    // ignore
+  }
+
+  // A panel positioned on a display that has just been unplugged is invisible but still live.
+  for (const evt of ["display-added", "display-removed", "display-metrics-changed"]) {
+    try {
+      screen.on(evt, () => hideAllPanels("display-change"));
+    } catch (_) {
+      // ignore
+    }
+  }
 }
 
 function setupClipboardListener() {
@@ -1692,54 +2045,180 @@ function setupClipboardListener() {
   }, 600);
 }
 
+/**
+ * Toggle instead of re-show: pressing the same shortcut while its panel is up closes it. Without
+ * this a panel that failed to draw could only be dismissed by pasting.
+ */
+function togglePanel(mode, opts) {
+  const alreadyOpen =
+    currentMode === mode && panelWindow && !panelWindow.isDestroyed() && panelWindow.isVisible();
+  if (alreadyOpen) {
+    hideAllPanels("shortcut-toggle");
+    return;
+  }
+  ensurePanelVisible(mode, opts);
+}
+
+const GLOBAL_SHORTCUTS = [
+  {
+    accelerator: "Command+Shift+V",
+    label: "Cmd+Shift+V (clipboard)",
+    run: () => {
+      togglePanel("clipboard", { fromShortcut: true, compact: true });
+      if (panelCompact) captureFrontmostPid();
+    },
+  },
+  {
+    accelerator: "Command+Shift+B",
+    label: "Cmd+Shift+B (SavedClip)",
+    run: () => {
+      togglePanel("templates", { fromShortcut: true, compact: true });
+      if (panelCompact) captureFrontmostPid();
+    },
+  },
+  {
+    accelerator: "Command+Shift+D",
+    label: "Cmd+Shift+D (quick add todo)",
+    run: () => togglePanel("todoQuickAdd", { fromShortcut: true, compact: true }),
+  },
+  {
+    accelerator: "Alt+Shift+D",
+    label: "Opt+Shift+D (today's todos)",
+    run: () => togglePanel("todosToday", { fromShortcut: true, compact: true }),
+  },
+];
+
+let globalShortcutHealthTimer = null;
+
+/**
+ * macOS silently drops global shortcut registrations across long sleeps and fast user switching.
+ * Re-register anything that went missing instead of waiting for a restart.
+ */
+function ensureGlobalShortcutsRegistered(logMissing = false) {
+  for (const sc of GLOBAL_SHORTCUTS) {
+    let registered = false;
+    try {
+      registered = globalShortcut.isRegistered(sc.accelerator);
+    } catch (_) {
+      registered = false;
+    }
+    if (registered) continue;
+    let ok = false;
+    try {
+      ok = globalShortcut.register(sc.accelerator, sc.run);
+    } catch (_) {
+      ok = false;
+    }
+    if (ok) {
+      if (logMissing) console.log(`Shortcut (re)registered: ${sc.label}`);
+    } else {
+      console.warn(`Failed to register ${sc.label} (may be taken by another app or blocked by macOS).`);
+    }
+  }
+}
+
 function setupGlobalShortcuts() {
-  // Cmd+Shift+V: show clipboard list
-  // Cmd+Shift+B: show templates list
-  // Option+Shift+D: today's todo list (Alt = Option on macOS)
-  const okToday = globalShortcut.register("Alt+Shift+D", () => {
-    ensurePanelVisible("todosToday", { fromShortcut: true, compact: true });
-  });
+  ensureGlobalShortcutsRegistered(true);
+  if (globalShortcutHealthTimer) clearInterval(globalShortcutHealthTimer);
+  globalShortcutHealthTimer = setInterval(() => ensureGlobalShortcutsRegistered(false), 60000);
+}
 
-  // Cmd+Shift+D: quick add todo
-  const okV = globalShortcut.register("Command+Shift+V", () => {
-    captureFrontmostPidSync();
-    ensurePanelVisible("clipboard", { fromShortcut: true, compact: true });
-  });
-  const okB = globalShortcut.register("Command+Shift+B", () => {
-    captureFrontmostPidSync();
-    ensurePanelVisible("templates", { fromShortcut: true, compact: true });
-  });
-  const okD = globalShortcut.register("Command+Shift+D", () => {
-    ensurePanelVisible("todoQuickAdd", { fromShortcut: true, compact: true });
-  });
+/** macOS registers login items through LaunchServices; Electron exposes that directly. */
+function useNativeLoginItem() {
+  return process.platform === "darwin";
+}
 
-  if (!okV) console.warn("Failed to register Command+Shift+V (may be blocked by macOS).");
-  else console.log("Shortcut registered: Cmd+Shift+V");
-  if (!okB) console.warn("Failed to register Command+Shift+B (may be blocked by macOS).");
-  else console.log("Shortcut registered: Cmd+Shift+B");
-  if (!okD) console.warn("Failed to register Command+Shift+D (may be blocked by macOS).");
-  else console.log("Shortcut registered: Cmd+Shift+D (quick add todo)");
-  if (!okToday) console.warn("Failed to register Alt+Shift+D (may be blocked by macOS).");
-  else console.log("Shortcut registered: Opt+Shift+D (today's todos)");
+function isLoginItemEnabled() {
+  if (useNativeLoginItem()) {
+    try {
+      return !!app.getLoginItemSettings().openAtLogin;
+    } catch (_) {
+      return false;
+    }
+  }
+  return startupLauncher ? startupLauncher.isEnabled() : Promise.resolve(false);
+}
+
+async function setLoginItemEnabled(enabled) {
+  if (useNativeLoginItem()) {
+    // openAsHidden keeps the menu-bar app from flashing a window during login.
+    app.setLoginItemSettings({ openAtLogin: !!enabled, openAsHidden: true });
+    return;
+  }
+  if (!startupLauncher) return;
+  if (enabled) await startupLauncher.enable();
+  else await startupLauncher.disable();
 }
 
 function setupStartupLauncher() {
-  startupLauncher = new AutoLaunch({
-    name: APP_NAME,
-    // Works in dev and in packaged apps.
-    path: process.execPath,
-  });
+  if (!useNativeLoginItem()) {
+    startupLauncher = new AutoLaunch({
+      name: APP_NAME,
+      // Works in dev and in packaged apps.
+      path: process.execPath,
+    });
+  }
 
-  // Best-effort; auto-launch may require a fresh permission prompt.
-  startupLauncher.isEnabled()
-    .then((enabled) => {
-      const desired = store.get("startupEnabled", false);
-      if (enabled !== desired) {
-        return desired ? startupLauncher.enable() : startupLauncher.disable();
-      }
-      return null;
-    })
+  const desired = store.get("startupEnabled", false);
+  Promise.resolve(isLoginItemEnabled())
+    .then((enabled) => (enabled === desired ? null : setLoginItemEnabled(desired)))
     .catch(() => {});
+}
+
+/**
+ * LSUIElement apps show no menu bar, but an application menu is still what gives the app its
+ * standard key equivalents — without it Cmd+C/V/A/Z stop working inside our own text fields.
+ */
+function setupApplicationMenu() {
+  if (process.platform !== "darwin") return;
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      {
+        label: APP_NAME,
+        submenu: [{ role: "hide" }, { role: "hideOthers" }, { type: "separator" }, { label: "Quit ClipNinja", accelerator: "CommandOrControl+Q", click: () => quitApp("application-menu") }],
+      },
+      {
+        label: "Edit",
+        submenu: [
+          { role: "undo" },
+          { role: "redo" },
+          { type: "separator" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          { role: "selectAll" },
+        ],
+      },
+    ]),
+  );
+}
+
+/** Same stuck-at-minimum guard as the main panel, for the separate items window. */
+let flyoutSizingWatchdogTimer = null;
+let flyoutSizingReported = false;
+
+function noteFlyoutSizingReported() {
+  flyoutSizingReported = true;
+  if (flyoutSizingWatchdogTimer) {
+    clearTimeout(flyoutSizingWatchdogTimer);
+    flyoutSizingWatchdogTimer = null;
+  }
+}
+
+function startFlyoutSizingWatchdog(fw) {
+  if (flyoutSizingWatchdogTimer) clearTimeout(flyoutSizingWatchdogTimer);
+  flyoutSizingReported = false;
+  flyoutSizingWatchdogTimer = setTimeout(() => {
+    flyoutSizingWatchdogTimer = null;
+    if (flyoutSizingReported) return;
+    if (!fw || fw.isDestroyed() || !fw.isVisible()) return;
+    try {
+      fw.setSize(CLIPBOARD_COMPACT_FLYOUT_WIDTH, COMPACT_FALLBACK_HEIGHT);
+      fw.webContents.send("clipboard-compact:flyout-sized");
+    } catch (_) {
+      // ignore
+    }
+  }, COMPACT_SIZING_TIMEOUT_MS);
 }
 
 function clampClipboardCompactHeight(h) {
@@ -1748,15 +2227,15 @@ function clampClipboardCompactHeight(h) {
   return Math.max(CLIPBOARD_COMPACT_MIN_HEIGHT, Math.min(CLIPBOARD_COMPACT_MAX_HEIGHT, n));
 }
 
+const flyoutContentKeys = new WeakMap();
+
 function bindIpc() {
   ipcMain.handle("data:getStartupEnabled", () => store.get("startupEnabled", false));
 
   ipcMain.handle("data:setStartupEnabled", async (_evt, enabled) => {
     store.set("startupEnabled", !!enabled);
-    if (!startupLauncher) return enabled;
     try {
-      if (enabled) await startupLauncher.enable();
-      else await startupLauncher.disable();
+      await setLoginItemEnabled(!!enabled);
     } catch (e) {
       console.error("Failed to set startup:", e);
     }
@@ -1764,17 +2243,30 @@ function bindIpc() {
   });
 
   ipcMain.on("ui:close", () => {
-    hideClipboardFlyoutWindow();
-    hideTemplatesFlyoutWindow();
-    if (panelWindow && panelWindow.isVisible()) panelWindow.hide();
-    overlayNavEnabled = false;
-    disableOverlayNavShortcuts();
+    hideAllPanels("ui-close");
+  });
+
+  /** Renderer heartbeat: any typing / pointer activity postpones the automatic dismissal. */
+  ipcMain.on("ui:interaction", () => {
+    notePanelInteraction();
+  });
+
+  ipcMain.on("ui:set-auto-dismiss", (_evt, enabled) => {
+    setPanelAutoDismissEnabled(enabled !== false);
   });
 
   ipcMain.on("ui:set-panel-mode", (_evt, { mode } = {}) => {
     if (typeof mode !== "string" || !mode) return;
+    if (mode !== currentMode) {
+      panelSession += 1;
+      panelCompact = false;
+      disableOverlayNavShortcuts();
+    }
     currentMode = mode;
-    if (mode === "settings") cancelPendingPanelBlurDismiss();
+    if (mode === "settings") {
+      cancelPendingPanelBlurDismiss();
+      stopPanelDismissWatch();
+    }
   });
 
   ipcMain.on("ui:open-templates-editor", (_evt, { id } = {}) => {
@@ -1782,28 +2274,39 @@ function bindIpc() {
   });
 
   ipcMain.on("clipboard-flyout:sync", (_evt, payload) => {
+    if (!panelWindow || panelWindow.isDestroyed() || !panelWindow.isVisible() ||
+        !panelCompact || currentMode !== "clipboard" || _evt.sender !== panelWindow.webContents) return;
     if (!payload || !payload.show) {
       hideClipboardFlyoutWindow();
       return;
     }
     const fw = createClipboardFlyoutWindow();
-    positionClipboardFlyoutWindow();
-    if (!fw.isVisible()) {
+    const opening = !fw.isVisible();
+    const contentKey = JSON.stringify([payload.entries || [], !!payload.pasteOnClick]);
+    const contentChanged = flyoutContentKeys.get(fw) !== contentKey;
+    flyoutContentKeys.set(fw, contentKey);
+    if (opening) {
+      positionClipboardFlyoutWindow();
+      reassertMacWindowLevel(fw);
       if (typeof fw.showInactive === "function") {
         fw.showInactive();
       } else {
         fw.show();
       }
     }
+    if (contentChanged) startFlyoutSizingWatchdog(fw);
     try {
-      fw.webContents.send("clipboard-flyout:render", payload);
+      windowDelivery.send(fw, "clipboard-flyout:render", payload);
+      if (opening) fw.webContents.invalidate();
     } catch (_) {
       // ignore
     }
     if (panelWindow && !panelWindow.isDestroyed()) {
       try {
-        panelWindow.focus();
-        panelWindow.webContents.focus();
+        if (!overlayNavEnabled) {
+          panelWindow.focus();
+          panelWindow.webContents.focus();
+        }
         panelWindow.webContents.send("clipboard-flyout:sync-done");
       } catch (_) {
         // ignore
@@ -1827,28 +2330,39 @@ function bindIpc() {
   });
 
   ipcMain.on("templates-flyout:sync", (_evt, payload) => {
+    if (!panelWindow || panelWindow.isDestroyed() || !panelWindow.isVisible() ||
+        !panelCompact || currentMode !== "templates" || _evt.sender !== panelWindow.webContents) return;
     if (!payload || !payload.show) {
       hideTemplatesFlyoutWindow();
       return;
     }
     const fw = createTemplatesFlyoutWindow();
-    positionTemplatesFlyoutWindow();
-    if (!fw.isVisible()) {
+    const opening = !fw.isVisible();
+    const contentKey = JSON.stringify([payload.entries || [], !!payload.pasteOnClick]);
+    const contentChanged = flyoutContentKeys.get(fw) !== contentKey;
+    flyoutContentKeys.set(fw, contentKey);
+    if (opening) {
+      positionTemplatesFlyoutWindow();
+      reassertMacWindowLevel(fw);
       if (typeof fw.showInactive === "function") {
         fw.showInactive();
       } else {
         fw.show();
       }
     }
+    if (contentChanged) startFlyoutSizingWatchdog(fw);
     try {
-      fw.webContents.send("templates-flyout:render", payload);
+      windowDelivery.send(fw, "templates-flyout:render", payload);
+      if (opening) fw.webContents.invalidate();
     } catch (_) {
       // ignore
     }
     if (panelWindow && !panelWindow.isDestroyed()) {
       try {
-        panelWindow.focus();
-        panelWindow.webContents.focus();
+        if (!overlayNavEnabled) {
+          panelWindow.focus();
+          panelWindow.webContents.focus();
+        }
         panelWindow.webContents.send("templates-flyout:sync-done");
       } catch (_) {
         // ignore
@@ -1872,11 +2386,14 @@ function bindIpc() {
   });
 
   ipcMain.on("clipboard-compact:resize-main", (_evt, height) => {
+    if (!panelCompact || !panelWindow || !panelWindow.isVisible() || _evt.sender !== panelWindow.webContents) return;
+    noteCompactSizingReported();
     if (!panelWindow || panelWindow.isDestroyed()) return;
     const h = clampClipboardCompactHeight(height);
     try {
       panelWindow.setSize(CLIPBOARD_COMPACT_MAIN_WIDTH, h);
       positionPanelNearCursor();
+      ensurePanelOnScreen();
       if (clipboardFlyoutWindow && !clipboardFlyoutWindow.isDestroyed() && clipboardFlyoutWindow.isVisible()) {
         positionClipboardFlyoutWindow();
       }
@@ -1892,9 +2409,13 @@ function bindIpc() {
   ipcMain.on("clipboard-compact:resize-flyout", (_evt, height) => {
     const h = clampClipboardCompactHeight(height);
     const fw = currentMode === "templates" ? templatesFlyoutWindow : clipboardFlyoutWindow;
-    if (!fw || fw.isDestroyed()) return;
+    if (!fw || fw.isDestroyed() || !fw.isVisible() || _evt.sender !== fw.webContents) return;
+    noteFlyoutSizingReported();
     try {
-      fw.setSize(CLIPBOARD_COMPACT_FLYOUT_WIDTH, h);
+      const bounds = fw.getBounds();
+      if (bounds.width !== CLIPBOARD_COMPACT_FLYOUT_WIDTH || bounds.height !== h) {
+        fw.setSize(CLIPBOARD_COMPACT_FLYOUT_WIDTH, h);
+      }
       if (currentMode === "templates") positionTemplatesFlyoutWindow();
       else positionClipboardFlyoutWindow();
       fw.webContents.send("clipboard-compact:flyout-sized");
@@ -1920,6 +2441,18 @@ function bindIpc() {
     if (id) {
       const byId = templates.find((t) => t.id === id);
       if (byId) {
+        if (groupName(byId) !== normalizedGroup) {
+          const destination = templates.filter(t => groupName(t) === normalizedGroup);
+          if (destination.length >= settings.savedPerGroup) {
+            return { ok: false, error: `This group is full (${settings.savedPerGroup} snippets).` };
+          }
+          const otherGroups = new Set(templates.filter(t => t !== byId).map(groupName));
+          if (!otherGroups.has(normalizedGroup) && otherGroups.size >= settings.savedGroupsMax) {
+            return { ok: false, error: `Max SavedClip groups reached (${settings.savedGroupsMax}).` };
+          }
+          templates.splice(templates.indexOf(byId), 1);
+          templates.push(byId); // Moving groups appends without disturbing either group's order.
+        }
         byId.group = normalizedGroup;
         byId.name = normalizedName;
         byId.text = normalizedText;
@@ -1941,7 +2474,10 @@ function bindIpc() {
         return { ok: false, error: `Max SavedClip groups reached (${settings.savedGroupsMax}).` };
       }
 
-      templates.unshift({
+      if (templates.filter(t => groupName(t) === normalizedGroup).length >= settings.savedPerGroup) {
+        return { ok: false, error: `This group is full (${settings.savedPerGroup} snippets).` };
+      }
+      templates.push({
         id: cryptoRandomId(),
         group: normalizedGroup,
         name: normalizedName,
@@ -1951,7 +2487,7 @@ function bindIpc() {
       });
     }
     setTemplates(enforceSavedClipLimits(templates, settings));
-    return { ok: true, id: existingExact?.id || templates[0]?.id };
+    return { ok: true, id: existingExact?.id || templates[templates.length - 1]?.id };
   });
 
   ipcMain.handle("templates:delete", (_evt, { id }) => {
@@ -1959,6 +2495,19 @@ function bindIpc() {
     const next = templates.filter((t) => t.id !== id);
     setTemplates(next);
     return { ok: true };
+  });
+
+  ipcMain.handle("templates:reorder", (_evt, move) => {
+    try {
+      const templates = reorderTemplates(getTemplates(), move);
+      setTemplates(templates);
+      if (panelWindow && !panelWindow.isDestroyed()) {
+        windowDelivery.send(panelWindow, "templates:order-changed", { templates, move });
+      }
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
   });
 
   ipcMain.handle("templates:getAll", () => getTemplates());
@@ -2016,7 +2565,14 @@ function bindIpc() {
   });
 }
 
+app.on("second-instance", () => {
+  // Someone launched a second copy (login item + manual open): surface the running one instead.
+  macUnhideApp();
+  refreshTrayMenuIfReady();
+});
+
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
   (async () => {
     await initStore();
     setupClipboardListener();
@@ -2037,15 +2593,19 @@ app.whenReady().then(() => {
     // Default: keep UI hidden; hotkeys will bring it up.
     // Dev/testing override: CLIPNINJA_SHOW_ON_START=1
     win.hide();
+    createClipboardFlyoutWindow();
+    createTemplatesFlyoutWindow();
     if (String(process.env.CLIPNINJA_SHOW_ON_START || "") === "1") {
       win.show();
       win.focus();
     }
 
+    setupApplicationMenu();
     setupGlobalShortcuts();
     setDockIcon();
     setupTray();
     setupOpenTodosTodayOnLoginWatchers();
+    setupSystemStateWatchers();
     scheduleOpenTodosTodayOnLogin("launch");
 
     if (process.platform === "darwin") {
@@ -2053,15 +2613,28 @@ app.whenReady().then(() => {
       frontmostPollInterval = setInterval(tickMacFrontmostPoll, 1500);
       logDevMacPastePermissionHints();
     }
-  })();
+    lifecycleLog("ready");
+  })().catch(error => {
+    lifecycleLog("startup-failed", errorMetadata(error));
+    console.error("ClipNinja failed to start:", error);
+    quitApp("startup-failed");
+  });
 });
 
 app.on("will-quit", () => {
+  lifecycleLog("will-quit", { reason: quitReason });
   globalShortcut.unregisterAll();
   if (frontmostPollInterval) {
     clearInterval(frontmostPollInterval);
     frontmostPollInterval = null;
   }
+  if (globalShortcutHealthTimer) {
+    clearInterval(globalShortcutHealthTimer);
+    globalShortcutHealthTimer = null;
+  }
+  hideAllPanels("quit");
+  clearInterval(clipboardPollInterval);
+  clearTimeout(openTodosTodayOnLoginTimer);
 });
 
 // Tray app: do not auto-show the panel on app.activate — app.show() after paste would reopen the UI.
@@ -2071,12 +2644,13 @@ function setupTray() {
 
   const base = loadTrayIconBase();
   if (!base) {
-    console.error("Tray icon empty (png+svg). Check assets/icon.png existence.");
+    console.error("Tray icon empty. Check assets/trayTemplate.png existence.");
     return;
   }
 
   const icon = buildTrayImageWithBadges(false, false);
-  tray = new Tray(icon || base.resize({ width: getTrayIconPixelSize(), height: getTrayIconPixelSize() }));
+  prepareTrayPosition();
+  tray = new Tray(icon || base, TRAY_GUID);
   refreshTrayIcon();
 
   tray.setContextMenu(buildTrayMenu());
@@ -2087,4 +2661,19 @@ function setupTray() {
     const menu = buildTrayMenu();
     tray.popUpContextMenu(menu, { x, y });
   });
+}
+
+function prepareTrayPosition() {
+  if (process.platform !== "darwin" || !app.isPackaged) return;
+  // AppKit otherwise adds new items at the far left, potentially behind a MacBook
+  // notch. Seed only an unset position; macOS saves subsequent Command-drag moves.
+  // getUserDefault returns 0 for a missing numeric key (also a valid rightmost slot).
+  const key = `NSStatusItem Preferred Position ${TRAY_GUID}`;
+  try {
+    if (systemPreferences.getUserDefault(key, "double") === 0) {
+      systemPreferences.setUserDefault(key, "double", 0);
+    }
+  } catch (error) {
+    console.error("Could not initialize menu-bar position:", error);
+  }
 }

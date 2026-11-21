@@ -9,15 +9,15 @@
   <body>
     <div id="root" class="app">
       <header class="header">
-        <div class="title" id="modeTitle">Clipboard</div>
-        <button class="close" id="closeBtn" aria-label="Close">×</button>
+        <div class="panel-identity"><span class="brand-mark" aria-hidden="true">⌘</span><div><span class="brand-name">CLIPNINJA</span><div class="title" id="modeTitle">Clipboard</div></div></div>
+        <button class="close" id="closeBtn" aria-label="Close panel" title="Close (Esc)">×</button>
       </header>
 
       <main class="content">
         <div class="tabs">
           <button class="tab" id="tabClipboard" type="button">Clipboard</button>
           <button class="tab" id="tabTemplates" type="button">Templates</button>
-          <button class="tab" id="tabTodos" type="button">Todos</button>
+          <button class="tab" id="tabTodos" type="button">Tasks</button>
           <button class="tab" id="tabSettings" type="button">Settings</button>
         </div>
 
@@ -34,14 +34,14 @@
 
         <section id="templatesSection" class="section templates-section hidden">
           <div class="sectionHeader">
-            <span>Preconfigured templates</span>
+            <span>Saved snippets</span>
             <span class="hint">↑↓ groups · → items · Enter paste · double-click to edit</span>
           </div>
 
           <div class="templateModeRow">
             <div class="templateMode">
               <button class="tab tabSmall active" id="listModeBtn" type="button">List</button>
-              <button class="tab tabSmall" id="configModeBtn" type="button">Configure</button>
+              <button class="tab tabSmall" id="configModeBtn" type="button">New snippet</button>
             </div>
           </div>
 
@@ -230,68 +230,203 @@
           </div>
         </section>
 
-        <section id="settingsSection" class="section hidden">
+        <section id="settingsSection" class="section settings-section hidden">
           <div class="sectionHeader">
             <span>Settings</span>
-            <span class="hint">Minimal demo</span>
+            <span class="hint">Tune ClipNinja to your workflow</span>
           </div>
 
-          <div class="configWrap">
-            <div class="form">
-              <div class="fieldRow">
-                <label>Startup</label>
-                <button class="btn secondary" id="toggleStartupBtnSettings" type="button">Loading...</button>
+          <div class="settings-scroll">
+            <div class="settings-card">
+              <div class="settings-card-head">
+                <span class="settings-card-index" aria-hidden="true">01</span>
+                <div class="settings-card-copy">
+                  <h3 class="settings-card-title">General</h3>
+                  <p class="settings-card-sub">Startup behaviour and appearance</p>
+                </div>
               </div>
 
-              <div class="fieldRow">
-                <label>Today on login</label>
-                <button class="btn secondary" id="toggleOpenTodosTodayOnLoginBtn" type="button">Loading...</button>
-              </div>
-              <p class="hint settings-login-hint">Opens today’s todo list after you sign in or unlock your Mac (⌥⇧D view).</p>
-
-              <div class="fieldRow">
-                <label>Theme</label>
-                <select id="themeSelect" class="input select" aria-label="Appearance theme">
-                  <option value="system">System</option>
-                  <option value="dark">Dark</option>
-                  <option value="light">Light</option>
-                </select>
-              </div>
-
-              <div class="divider"></div>
-
-              <div class="fieldRow">
-                <label>Clipboard: No of Groups</label>
-                <input id="setClipboardGroups" class="input" type="number" min="1" max="20" step="1" />
-              </div>
-              <div class="fieldRow">
-                <label>Clipboard: No of Group items</label>
-                <input id="setClipboardPerGroup" class="input" type="number" min="1" max="20" step="1" />
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <span class="setting-name">Launch at login</span>
+                  <span class="setting-desc">Keep ClipNinja in the menu bar from sign-in.</span>
+                </div>
+                <div class="setting-control">
+                  <button
+                    class="settings-switch"
+                    id="toggleStartupBtnSettings"
+                    type="button"
+                    role="switch"
+                    aria-checked="false"
+                    aria-label="Launch at login"
+                  >
+                    …
+                  </button>
+                </div>
               </div>
 
-              <div class="divider"></div>
-
-              <div class="fieldRow">
-                <label>SavedClips: No of Groups</label>
-                <input id="setSavedGroupsMax" class="input" type="number" min="1" max="20" step="1" />
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <span class="setting-name">Today on login</span>
+                  <span class="setting-desc">Open today’s task list (⌥⇧D) after you sign in or unlock.</span>
+                </div>
+                <div class="setting-control">
+                  <button
+                    class="settings-switch"
+                    id="toggleOpenTodosTodayOnLoginBtn"
+                    type="button"
+                    role="switch"
+                    aria-checked="false"
+                    aria-label="Show today’s tasks on login"
+                  >
+                    …
+                  </button>
+                </div>
               </div>
-              <div class="fieldRow">
-                <label>SavedClips: No of Group items</label>
-                <input id="setSavedPerGroup" class="input" type="number" min="1" max="20" step="1" />
+
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <span class="setting-name">Appearance</span>
+                  <span class="setting-desc">Follow macOS, or lock the panel to one theme.</span>
+                </div>
+                <div class="setting-control">
+                  <select id="themeSelect" class="input select settings-select" aria-label="Appearance theme">
+                    <option value="system">System</option>
+                    <option value="dark">Dark</option>
+                    <option value="light">Light</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-card-head">
+                <span class="settings-card-index" aria-hidden="true">02</span>
+                <div class="settings-card-copy">
+                  <h3 class="settings-card-title">Clipboard history</h3>
+                  <p class="settings-card-sub">How much history the panel keeps in memory</p>
+                </div>
               </div>
 
-              <div class="actions">
-                <button class="btn" id="saveSettingsBtn" type="button">Save settings</button>
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <span class="setting-name">Clip groups</span>
+                  <span class="setting-desc">Source apps tracked at once.</span>
+                </div>
+                <div class="setting-control">
+                  <input
+                    id="setClipboardGroups"
+                    class="input settings-num"
+                    type="number"
+                    min="1"
+                    max="20"
+                    step="1"
+                    aria-label="Clip groups"
+                  />
+                </div>
               </div>
-              <div id="settingsStatus" class="status" aria-live="polite"></div>
 
-              <div class="status" id="settingsHelp" aria-live="polite">
-                Use `Cmd+Shift+V` to open Clipboard and `Cmd+Shift+B` for SavedCip.
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <span class="setting-name">Clips per group</span>
+                  <span class="setting-desc">Entries kept for each app before the oldest drops.</span>
+                </div>
+                <div class="setting-control">
+                  <input
+                    id="setClipboardPerGroup"
+                    class="input settings-num"
+                    type="number"
+                    min="1"
+                    max="20"
+                    step="1"
+                    aria-label="Clips per group"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <div class="settings-card-head">
+                <span class="settings-card-index" aria-hidden="true">03</span>
+                <div class="settings-card-copy">
+                  <h3 class="settings-card-title">Saved snippets</h3>
+                  <p class="settings-card-sub">Capacity for your SavedClip library</p>
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <span class="setting-name">Snippet groups</span>
+                  <span class="setting-desc">Folders available in the Templates tab.</span>
+                </div>
+                <div class="setting-control">
+                  <input
+                    id="setSavedGroupsMax"
+                    class="input settings-num"
+                    type="number"
+                    min="1"
+                    max="20"
+                    step="1"
+                    aria-label="Snippet groups"
+                  />
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <span class="setting-name">Snippets per group</span>
+                  <span class="setting-desc">Saved texts allowed inside each folder.</span>
+                </div>
+                <div class="setting-control">
+                  <input
+                    id="setSavedPerGroup"
+                    class="input settings-num"
+                    type="number"
+                    min="1"
+                    max="20"
+                    step="1"
+                    aria-label="Snippets per group"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-card" id="settingsHelp">
+              <div class="settings-card-head">
+                <span class="settings-card-index" aria-hidden="true">04</span>
+                <div class="settings-card-copy">
+                  <h3 class="settings-card-title">Global shortcuts</h3>
+                  <p class="settings-card-sub">Work from any app while ClipNinja runs</p>
+                </div>
+              </div>
+              <div class="settings-keys">
+                <div class="settings-key-row">
+                  <span>Clipboard history</span>
+                  <span class="info-kbd-group"><kbd class="kbd">⌘</kbd><kbd class="kbd">⇧</kbd><kbd class="kbd">V</kbd></span>
+                </div>
+                <div class="settings-key-row">
+                  <span>Saved snippets</span>
+                  <span class="info-kbd-group"><kbd class="kbd">⌘</kbd><kbd class="kbd">⇧</kbd><kbd class="kbd">B</kbd></span>
+                </div>
+                <div class="settings-key-row">
+                  <span>Quick add task</span>
+                  <span class="info-kbd-group"><kbd class="kbd">⌘</kbd><kbd class="kbd">⇧</kbd><kbd class="kbd">D</kbd></span>
+                </div>
+                <div class="settings-key-row">
+                  <span>Today’s tasks</span>
+                  <span class="info-kbd-group"><kbd class="kbd">⌥</kbd><kbd class="kbd">⇧</kbd><kbd class="kbd">D</kbd></span>
+                </div>
               </div>
             </div>
           </div>
+
+          <div class="settings-foot">
+            <div id="settingsStatus" class="status settings-status" aria-live="polite"></div>
+            <button class="btn settings-save" id="saveSettingsBtn" type="button">Save settings</button>
+          </div>
         </section>
       </main>
+      <footer class="shortcut-footer"><span><kbd>↑↓</kbd> select <kbd>→</kbd> browse</span><span><kbd>↵</kbd> paste</span></footer>
 
       <div id="snippetEditorOverlay" class="snippet-editor-overlay hidden" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="snippetEditorTitle">
         <div class="snippet-editor-panel">
@@ -331,6 +466,8 @@
       </div>
     </div>
 
+    <script src="flyout-list.js"></script>
+    <script src="list-reorder.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>
