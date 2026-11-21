@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld("api", {
   setStartupEnabled: (enabled) => ipcRenderer.invoke("data:setStartupEnabled", enabled),
 
   getTemplatesAll: () => ipcRenderer.invoke("templates:getAll"),
+  reorderTemplates: (move) => ipcRenderer.invoke("templates:reorder", move),
+  onTemplatesOrderChanged: (handler) => ipcRenderer.on("templates:order-changed", (_evt, payload) => handler(payload)),
   saveTemplate: (payload) => ipcRenderer.invoke("templates:save", payload),
   deleteTemplate: (id) => ipcRenderer.invoke("templates:delete", { id }),
 
@@ -22,6 +24,10 @@ contextBridge.exposeInMainWorld("api", {
 
   paste: (text) => ipcRenderer.send("ui:paste", { text }),
   close: () => ipcRenderer.send("ui:close"),
+  /** Keeps the main process' auto-dismiss timers from firing while the panel is in use. */
+  reportInteraction: () => ipcRenderer.send("ui:interaction"),
+  /** Pin the panel open (e.g. while an editor is on screen) so no timer can close it mid-edit. */
+  setAutoDismiss: (enabled) => ipcRenderer.send("ui:set-auto-dismiss", enabled),
   setPanelMode: (mode) => ipcRenderer.send("ui:set-panel-mode", { mode }),
   openTemplatesEditor: (id) => ipcRenderer.send("ui:open-templates-editor", { id }),
 
